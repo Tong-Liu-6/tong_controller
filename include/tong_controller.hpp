@@ -11,6 +11,7 @@
 #include "nav2_core/controller.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "nav2_util/odometry_utils.hpp"
+#include "nav2_util/geometry_utils.hpp"
 #include "geometry_msgs/msg/pose2_d.hpp"
 
 namespace tong_controller
@@ -55,7 +56,11 @@ protected:
 
   // Controller params
   std::string base_frame_, map_frame_;
-  double angular_speed;
+  double kp_, kp_rot_, ki_, lookahead_, preview_, goal_tolerance_; 
+  double max_vel_linear_, max_vel_angular_; 
+  double dt, integrator_x, integrator_y;
+  double v, omega;
+  double linear_vel, angular_vel;
 
   // Dynamic parameters handler
   std::mutex mutex_;

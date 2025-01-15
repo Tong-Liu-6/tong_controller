@@ -2,7 +2,6 @@
 #include "tong_controller.hpp"
 
 using nav2_util::declare_parameter_if_not_declared;
-
 namespace tong_controller
 {
 void TrackedMPC::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& parent, std::string name,
@@ -24,16 +23,37 @@ void TrackedMPC::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& paren
   clock_ = node->get_clock();
 
   // params
+  // frame name
   declare_parameter_if_not_declared(node, plugin_name_ + ".base_frame", rclcpp::ParameterValue("base_link"));
   declare_parameter_if_not_declared(node, plugin_name_ + ".map_frame", rclcpp::ParameterValue("map"));
   node->get_parameter(plugin_name_ + ".base_frame", base_frame_);
   node->get_parameter(plugin_name_ + ".map_frame", map_frame_);
 
-  declare_parameter_if_not_declared(node, plugin_name_ + ".angular_speed", rclcpp::ParameterValue(0.5));
-  node->get_parameter(plugin_name_ + ".angular_speed", angular_speed);
+  // PI controller
+  declare_parameter_if_not_declared(node, plugin_name_ + ".kp", rclcpp::ParameterValue(2.0));
+  node->get_parameter(plugin_name_ + ".kp", kp_);
+  declare_parameter_if_not_declared(node, plugin_name_ + ".ki", rclcpp::ParameterValue(1.0));
+  node->get_parameter(plugin_name_ + ".ki", ki_);
+  declare_parameter_if_not_declared(node, plugin_name_ + ".lookahead", rclcpp::ParameterValue(0.25));
+  node->get_parameter(plugin_name_ + ".lookahead", lookahead_);
+  declare_parameter_if_not_declared(node, plugin_name_ + ".preview", rclcpp::ParameterValue(0.1));
+  node->get_parameter(plugin_name_ + ".preview", preview_);
+
+  // goal orientation (P controller)
+  declare_parameter_if_not_declared(node, plugin_name_ + ".goal_tolerance", rclcpp::ParameterValue(0.15));
+  node->get_parameter(plugin_name_ + ".goal_tolerance", goal_tolerance_);
+  declare_parameter_if_not_declared(node, plugin_name_ + ".kp_rot", rclcpp::ParameterValue(1.0));
+  node->get_parameter(plugin_name_ + ".kp_rot", kp_rot_);
+
+  // speed limitation
+  declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_linear", rclcpp::ParameterValue(0.2));
+  node->get_parameter(plugin_name_ + ".max_vel_linear", max_vel_linear_);
+  declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_angular", rclcpp::ParameterValue(1.8));
+  node->get_parameter(plugin_name_ + ".max_vel_angular", max_vel_angular_);
 
   double controller_freqency;
   node->get_parameter("controller_frequency", controller_freqency);
+  dt = 1 / controller_freqency;
 
   RCLCPP_INFO(logger_, "TrackedMPC initialized!");
 
@@ -72,6 +92,27 @@ void TrackedMPC::setPlan(const nav_msgs::msg::Path& path)
 {
   RCLCPP_INFO(logger_, "Got new plan");
   global_plan_ = path;
+
+  // integrator initialization
+  integrator_x = 0.0;
+  integrator_y = 0.0;
+
+  // // for test only
+  // size_t total_points = path.poses.size();
+  // size_t idx_1 = total_points / 4;
+  // size_t idx_2 = total_points / 2;
+  // size_t idx_3 = (3 * total_points) / 4;
+  // geometry_msgs::msg::PoseStamped pose_0 = path.poses[0];
+  // geometry_msgs::msg::PoseStamped pose_1 = path.poses[idx_1];
+  // geometry_msgs::msg::PoseStamped pose_2 = path.poses[idx_2];
+  // geometry_msgs::msg::PoseStamped pose_3 = path.poses[idx_3];
+  // geometry_msgs::msg::PoseStamped pose_4 = path.poses[total_points - 1];
+  // RCLCPP_INFO(logger_, "Timestamps (sec): first=%d, 1/4=%d, 1/2=%d, 3/4=%d, last=%d",
+  //             pose_0.header.stamp.sec,
+  //             pose_1.header.stamp.sec,
+  //             pose_2.header.stamp.sec,
+  //             pose_3.header.stamp.sec,
+  //             pose_4.header.stamp.sec);
 }
 
 geometry_msgs::msg::TwistStamped TrackedMPC::computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose,
@@ -93,12 +134,59 @@ geometry_msgs::msg::TwistStamped TrackedMPC::computeVelocityCommands(const geome
   // get speed
   double vt = std::hypot(speed.linear.x, speed.linear.y);
   double wt = speed.angular.z;
+  double theta = tf2::getYaw(pose.pose.orientation);
 
-  // publish command
+  //  edit command message
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header.frame_id = pose.header.frame_id;
   cmd_vel.header.stamp = clock_->now();
-  cmd_vel.twist.angular.z = angular_speed;
+
+
+  // control orientation at goal
+  geometry_msgs::msg::PoseStamped goal_pose = global_plan_.poses[global_plan_.poses.size() - 1];
+  double goal_dist = nav2_util::geometry_utils::euclidean_distance(pose.pose.position, goal_pose.pose.position);
+  if (goal_dist < goal_tolerance_) {
+    cmd_vel.twist.linear.x = 0.0;
+    double d_theta = tf2::getYaw(goal_pose.pose.orientation) - theta;
+    while (d_theta > M_PI) d_theta -= 2 * M_PI; 
+    while (d_theta < -M_PI) d_theta += 2 * M_PI; 
+    angular_vel = kp_rot_ * d_theta;
+    cmd_vel.twist.angular.z = std::max(-max_vel_angular_, std::min(angular_vel, max_vel_angular_));
+    return cmd_vel;
+  }
+
+  // get target point
+  size_t closest_idx = global_plan_.poses.size() - 1;
+  for (size_t i = 0; i < global_plan_.poses.size(); i++) {
+    double dist = nav2_util::geometry_utils::euclidean_distance(pose.pose.position, global_plan_.poses[i].pose.position);
+    if (dist >= lookahead_) {
+      closest_idx = i;
+      break;
+    }
+  }
+  geometry_msgs::msg::PoseStamped target_pose = global_plan_.poses[closest_idx];
+
+  // feedback linearization
+  // calculate point P
+  geometry_msgs::msg::PoseStamped preview_point; 
+  preview_point.pose.position.x = pose.pose.position.x + preview_ * cos(theta); 
+  preview_point.pose.position.y = pose.pose.position.y + preview_ * sin(theta); 
+
+  // PI controller
+  double dx = target_pose.pose.position.x - preview_point.pose.position.x;
+  double dy = target_pose.pose.position.y - preview_point.pose.position.y;
+  integrator_x += dt * dx;
+  integrator_y += dt * dy;
+  double v_xp = kp_ * dx + ki_ * integrator_x; 
+  double v_yp = kp_ * dy + ki_ * integrator_y; 
+
+  // kinematic model linearization
+  linear_vel = v_xp * cos(theta) + v_yp * sin(theta);
+  angular_vel = (v_yp * cos(theta) - v_xp * sin(theta)) / preview_;
+
+  // limit speed
+  cmd_vel.twist.linear.x = std::max(-max_vel_linear_, std::min(linear_vel, max_vel_linear_));
+  cmd_vel.twist.angular.z = std::max(-max_vel_angular_, std::min(angular_vel, max_vel_angular_));
 
   return cmd_vel;
 }
