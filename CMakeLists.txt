@@ -33,7 +33,8 @@ set(dependencies
 )
 
 add_library(${library_name} SHARED
-  src/tong_controller.cpp
+  src/trackedmpc.cpp
+  src/followtrajectory.cpp
 )
 
 ament_target_dependencies(${library_name}

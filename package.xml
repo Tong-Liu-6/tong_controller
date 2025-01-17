@@ -3,7 +3,7 @@
 <package format="3">
   <name>tong_controller_plugin</name>
   <version>0.1.0</version>
-  <description>This is a MPC Controller plugin for tracked robot.</description>
+  <description>This is a Controller plugin for tracked robot.</description>
   <maintainer email="tong.liu@mail.polimi.it">Tong</maintainer>
   <license>BSD-3-Clause</license>
 

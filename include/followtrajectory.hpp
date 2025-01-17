@@ -1,5 +1,5 @@
-#ifndef NAV2_TONG_CONTROLLER_HPP_
-#define NAV2_TONG_CONTROLLER_HPP_
+#ifndef NAV2_FOLLOW_TRAJECTORY_HPP_
+#define NAV2_FOLLOW_TRAJECTORY_HPP_
 
 #include <string>
 #include <vector>
@@ -13,15 +13,16 @@
 #include "nav2_util/odometry_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "geometry_msgs/msg/pose2_d.hpp"
+// #include "interpolation.h"
 
 namespace tong_controller
 {
 
-class TrackedMPC : public nav2_core::Controller
+class FollowTrajectory : public nav2_core::Controller
 {
 public:
-  TrackedMPC() = default;
-  ~TrackedMPC() override = default;
+  FollowTrajectory() = default;
+  ~FollowTrajectory() override = default;
 
   void configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& parent, std::string name,
                  std::shared_ptr<tf2_ros::Buffer> tf,
@@ -41,6 +42,10 @@ public:
 
   void setSpeedLimit(const double& speed_limit, const bool& percentage) override;
 
+  double limitSpeed(const double& expected_angular_speed, const double& max_angular_speed, const double& max_linear_speed);
+  nav_msgs::msg::Path path2trajectory(nav_msgs::msg::Path global_path);
+  // void getPArray(const nav_msgs::msg::Path& global_trajectory, alglib::real_1d_array& P_time, alglib::real_1d_array& P_x, alglib::real_1d_array& P_y);
+
 private:
 
 protected:
@@ -49,15 +54,22 @@ protected:
   std::string plugin_name_;
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   nav2_costmap_2d::Costmap2D* costmap_;
-  rclcpp::Logger logger_{ rclcpp::get_logger("TrackedMPC") };
+  rclcpp::Logger logger_{ rclcpp::get_logger("FollowTrajectory") };
   rclcpp::Clock::SharedPtr clock_;
   nav_msgs::msg::Path global_plan_;
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D*>> collision_checker_;
 
   // Controller params
   std::string base_frame_, map_frame_;
-  double kp_, kp_rot_, ki_, lookahead_, preview_, goal_tolerance_; 
-  double max_vel_linear_, max_vel_angular_; 
+  double max_vel_linear_, max_vel_angular_, preview_length_; 
+  nav_msgs::msg::Path global_trajectory;
+  // alglib::spline1dinterpolant cubicspline_x, cubicspline_y;
+
+
+
+
+  double kp_, kp_rot_, ki_, lookahead_, goal_tolerance_; 
+  
   double dt, integrator_x, integrator_y;
   double v, omega;
   double linear_vel, angular_vel;

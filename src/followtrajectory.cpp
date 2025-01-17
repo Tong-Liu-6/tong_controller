@@ -1,10 +1,10 @@
 #include <nav2_core/exceptions.hpp>
-#include "tong_controller.hpp"
+#include "followtrajectory.hpp"
 
 using nav2_util::declare_parameter_if_not_declared;
 namespace tong_controller
 {
-void TrackedMPC::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& parent, std::string name,
+void FollowTrajectory::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& parent, std::string name,
                            std::shared_ptr<tf2_ros::Buffer> tf,
                            std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros)
 {
@@ -29,6 +29,23 @@ void TrackedMPC::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& paren
   node->get_parameter(plugin_name_ + ".base_frame", base_frame_);
   node->get_parameter(plugin_name_ + ".map_frame", map_frame_);
 
+  // speed limitation
+  declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_linear", rclcpp::ParameterValue(0.2));
+  node->get_parameter(plugin_name_ + ".max_vel_linear", max_vel_linear_);
+  declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_angular", rclcpp::ParameterValue(1.8));
+  node->get_parameter(plugin_name_ + ".max_vel_angular", max_vel_angular_);
+
+  // params
+  declare_parameter_if_not_declared(node, plugin_name_ + ".preview_length", rclcpp::ParameterValue(0.1));
+  node->get_parameter(plugin_name_ + ".preview_length", preview_length_);
+
+
+
+
+
+
+
+
   // PI controller
   declare_parameter_if_not_declared(node, plugin_name_ + ".kp", rclcpp::ParameterValue(2.0));
   node->get_parameter(plugin_name_ + ".kp", kp_);
@@ -36,8 +53,7 @@ void TrackedMPC::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& paren
   node->get_parameter(plugin_name_ + ".ki", ki_);
   declare_parameter_if_not_declared(node, plugin_name_ + ".lookahead", rclcpp::ParameterValue(0.25));
   node->get_parameter(plugin_name_ + ".lookahead", lookahead_);
-  declare_parameter_if_not_declared(node, plugin_name_ + ".preview", rclcpp::ParameterValue(0.1));
-  node->get_parameter(plugin_name_ + ".preview", preview_);
+  
 
   // goal orientation (P controller)
   declare_parameter_if_not_declared(node, plugin_name_ + ".goal_tolerance", rclcpp::ParameterValue(0.15));
@@ -45,77 +61,60 @@ void TrackedMPC::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& paren
   declare_parameter_if_not_declared(node, plugin_name_ + ".kp_rot", rclcpp::ParameterValue(1.0));
   node->get_parameter(plugin_name_ + ".kp_rot", kp_rot_);
 
-  // speed limitation
-  declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_linear", rclcpp::ParameterValue(0.2));
-  node->get_parameter(plugin_name_ + ".max_vel_linear", max_vel_linear_);
-  declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_angular", rclcpp::ParameterValue(1.8));
-  node->get_parameter(plugin_name_ + ".max_vel_angular", max_vel_angular_);
-
   double controller_freqency;
   node->get_parameter("controller_frequency", controller_freqency);
   dt = 1 / controller_freqency;
 
-  RCLCPP_INFO(logger_, "TrackedMPC initialized!");
+  RCLCPP_INFO(logger_, "FollowTrajectory initialized!");
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D*>>(costmap_);
   collision_checker_->setCostmap(costmap_);
 }
 
-void TrackedMPC::cleanup()
+void FollowTrajectory::cleanup()
 {
   RCLCPP_INFO(logger_,
               "Cleaning up controller: %s of type "
-              "tong_controller::TrackedMPC",
+              "tong_controller::FollowTrajectory",
               plugin_name_.c_str());
 }
 
-void TrackedMPC::activate()
+void FollowTrajectory::activate()
 {
   RCLCPP_INFO(logger_,
               "Activating controller: %s of type "
-              "tong_controller::TrackedMPC",
+              "tong_controller::FollowTrajectory",
               plugin_name_.c_str());
   // Add callback for dynamic parameters
   auto node = node_.lock();
 }
 
-void TrackedMPC::deactivate()
+void FollowTrajectory::deactivate()
 {
   RCLCPP_INFO(logger_,
               "Deactivating controller: %s of type "
-              "tong_controller::TrackedMPC",
+              "tong_controller::FollowTrajectory",
               plugin_name_.c_str());
 }
 
-void TrackedMPC::setPlan(const nav_msgs::msg::Path& path)
+void FollowTrajectory::setPlan(const nav_msgs::msg::Path& path)
 {
   RCLCPP_INFO(logger_, "Got new plan");
   global_plan_ = path;
+  global_trajectory = path2trajectory(global_plan_);
+  // alglib::real_1d_array P_time, P_x, P_y;
+  // getPArray(global_trajectory, P_time, P_x, P_y);
+  // alglib::spline1dbuildcubic(P_time, P_x, cubicspline_x);
+  // alglib::spline1dbuildcubic(P_time, P_y, P_time.length(), 1, 0.0, 1, 0.0, cubicspline_y, alglib::xdefault);
 
   // integrator initialization
   integrator_x = 0.0;
   integrator_y = 0.0;
 
-  // // for test only
-  // size_t total_points = path.poses.size();
-  // size_t idx_1 = total_points / 4;
-  // size_t idx_2 = total_points / 2;
-  // size_t idx_3 = (3 * total_points) / 4;
-  // geometry_msgs::msg::PoseStamped pose_0 = path.poses[0];
-  // geometry_msgs::msg::PoseStamped pose_1 = path.poses[idx_1];
-  // geometry_msgs::msg::PoseStamped pose_2 = path.poses[idx_2];
-  // geometry_msgs::msg::PoseStamped pose_3 = path.poses[idx_3];
-  // geometry_msgs::msg::PoseStamped pose_4 = path.poses[total_points - 1];
-  // RCLCPP_INFO(logger_, "Timestamps (sec): first=%d, 1/4=%d, 1/2=%d, 3/4=%d, last=%d",
-  //             pose_0.header.stamp.sec,
-  //             pose_1.header.stamp.sec,
-  //             pose_2.header.stamp.sec,
-  //             pose_3.header.stamp.sec,
-  //             pose_4.header.stamp.sec);
 }
 
-geometry_msgs::msg::TwistStamped TrackedMPC::computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose,
+geometry_msgs::msg::TwistStamped FollowTrajectory::computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose,
                                                                         const geometry_msgs::msg::Twist& speed,
                                                                         nav2_core::GoalChecker* goal_checker)
 {
@@ -169,8 +168,8 @@ geometry_msgs::msg::TwistStamped TrackedMPC::computeVelocityCommands(const geome
   // feedback linearization
   // calculate point P
   geometry_msgs::msg::PoseStamped preview_point; 
-  preview_point.pose.position.x = pose.pose.position.x + preview_ * cos(theta); 
-  preview_point.pose.position.y = pose.pose.position.y + preview_ * sin(theta); 
+  preview_point.pose.position.x = pose.pose.position.x + preview_length_ * cos(theta); 
+  preview_point.pose.position.y = pose.pose.position.y + preview_length_ * sin(theta); 
 
   // PI controller
   double dx = target_pose.pose.position.x - preview_point.pose.position.x;
@@ -182,7 +181,7 @@ geometry_msgs::msg::TwistStamped TrackedMPC::computeVelocityCommands(const geome
 
   // kinematic model linearization
   linear_vel = v_xp * cos(theta) + v_yp * sin(theta);
-  angular_vel = (v_yp * cos(theta) - v_xp * sin(theta)) / preview_;
+  angular_vel = (v_yp * cos(theta) - v_xp * sin(theta)) / preview_length_;
 
   // limit speed
   cmd_vel.twist.linear.x = std::max(-max_vel_linear_, std::min(linear_vel, max_vel_linear_));
@@ -191,12 +190,63 @@ geometry_msgs::msg::TwistStamped TrackedMPC::computeVelocityCommands(const geome
   return cmd_vel;
 }
 
-void TrackedMPC::setSpeedLimit(const double& speed_limit, const bool& percentage)
+void FollowTrajectory::setSpeedLimit(const double& speed_limit, const bool& percentage)
 {
   // 
 }
 
+double FollowTrajectory::limitSpeed(const double& expected_angular_speed, const double& max_angular_speed, const double& max_linear_speed)
+{
+  double limit_linear_speed = max_linear_speed * (1 - std::abs(expected_angular_speed) / max_angular_speed);
+  return limit_linear_speed;
+}
+
+nav_msgs::msg::Path FollowTrajectory::path2trajectory(nav_msgs::msg::Path global_path)
+{ 
+  size_t path_length = global_path.poses.size();
+
+  double point_time = 0.0;
+  rclcpp::Time ros_time(point_time, RCL_ROS_TIME);
+  global_path.poses[0].header.stamp = ros_time;
+
+  global_path.poses[0].pose.orientation.z = tf2::getYaw(global_path.poses[0].pose.orientation);
+  global_path.poses[path_length - 1].pose.orientation.z = tf2::getYaw(global_path.poses[path_length - 1].pose.orientation);
+
+  double point_yaw, interval_time;
+
+  for (size_t i = 1; i < path_length; i++) {
+    if (i != path_length - 1) {
+      point_yaw = atan2(global_path.poses[i].pose.position.y - global_path.poses[i - 1].pose.position.y, global_path.poses[i].pose.position.x - global_path.poses[i - 1].pose.position.x);
+      global_path.poses[i].pose.orientation.z = point_yaw;
+    }
+    
+    double d_yaw = global_path.poses[i].pose.orientation.z - global_path.poses[i - 1].pose.orientation.z;
+    while (d_yaw > M_PI) d_yaw -= 2 * M_PI; 
+    while (d_yaw < -M_PI) d_yaw += 2 * M_PI;
+    double d_distance = nav2_util::geometry_utils::euclidean_distance(global_path.poses[i].pose.position, global_path.poses[i - 1].pose.position);
+    interval_time = d_yaw / max_vel_angular_ + d_distance / max_vel_linear_;
+    point_time += interval_time;
+    rclcpp::Time ros_time(point_time, RCL_ROS_TIME);
+    global_path.poses[i].header.stamp = ros_time;
+  }
+
+  return global_path;
+}
+
+// void FollowTrajectory::getPArray(const nav_msgs::msg::Path& global_trajectory, alglib::real_1d_array& P_time, alglib::real_1d_array& P_x, alglib::real_1d_array& P_y)
+// {
+//   size_t trajectory_length = global_trajectory.poses.size();
+//   P_time.setlength(trajectory_length);
+//   P_x.setlength(trajectory_length);
+//   P_y.setlength(trajectory_length);
+//   for (size_t i = 0; i < trajectory_length; i++) {
+//     P_time[i] = 1.0 * global_trajectory.poses[i].header.stamp.sec + 1e-9 * global_trajectory.poses[i].header.stamp.nanosec;
+//     P_x[i] = global_trajectory.poses[i].pose.position.x + preview_length_ * cos(global_trajectory.poses[i].pose.orientation.z); 
+//     P_y[i] = global_trajectory.poses[i].pose.position.y + preview_length_ * sin(global_trajectory.poses[i].pose.orientation.z);
+//   }
+// }
+
 }  // namespace tong_controller
 
 #include <pluginlib/class_list_macros.hpp>
-PLUGINLIB_EXPORT_CLASS(tong_controller::TrackedMPC, nav2_core::Controller)
+PLUGINLIB_EXPORT_CLASS(tong_controller::FollowTrajectory, nav2_core::Controller)
