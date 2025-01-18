@@ -32,38 +32,33 @@ void FollowTrajectory::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr&
   // speed limitation
   declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_linear", rclcpp::ParameterValue(0.2));
   node->get_parameter(plugin_name_ + ".max_vel_linear", max_vel_linear_);
-  declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_angular", rclcpp::ParameterValue(1.8));
+  declare_parameter_if_not_declared(node, plugin_name_ + ".max_vel_angular", rclcpp::ParameterValue(2.0));
   node->get_parameter(plugin_name_ + ".max_vel_angular", max_vel_angular_);
 
   // params
   declare_parameter_if_not_declared(node, plugin_name_ + ".preview_length", rclcpp::ParameterValue(0.1));
   node->get_parameter(plugin_name_ + ".preview_length", preview_length_);
 
-
-
-
-
-
-
-
   // PI controller
-  declare_parameter_if_not_declared(node, plugin_name_ + ".kp", rclcpp::ParameterValue(2.0));
+  declare_parameter_if_not_declared(node, plugin_name_ + ".kp", rclcpp::ParameterValue(1.5));
   node->get_parameter(plugin_name_ + ".kp", kp_);
-  declare_parameter_if_not_declared(node, plugin_name_ + ".ki", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(node, plugin_name_ + ".ki", rclcpp::ParameterValue(0.005));
   node->get_parameter(plugin_name_ + ".ki", ki_);
-  declare_parameter_if_not_declared(node, plugin_name_ + ".lookahead", rclcpp::ParameterValue(0.25));
-  node->get_parameter(plugin_name_ + ".lookahead", lookahead_);
-  
+  declare_parameter_if_not_declared(node, plugin_name_ + ".pi_freq_ratio", rclcpp::ParameterValue(5));
+  node->get_parameter(plugin_name_ + ".pi_freq_ratio", pi_freq_ratio_);
 
+
+  
+  // declare_parameter_if_not_declared(node, plugin_name_ + ".lookahead", rclcpp::ParameterValue(0.25));
+  // node->get_parameter(plugin_name_ + ".lookahead", lookahead_);
   // goal orientation (P controller)
-  declare_parameter_if_not_declared(node, plugin_name_ + ".goal_tolerance", rclcpp::ParameterValue(0.15));
-  node->get_parameter(plugin_name_ + ".goal_tolerance", goal_tolerance_);
-  declare_parameter_if_not_declared(node, plugin_name_ + ".kp_rot", rclcpp::ParameterValue(1.0));
-  node->get_parameter(plugin_name_ + ".kp_rot", kp_rot_);
+  // declare_parameter_if_not_declared(node, plugin_name_ + ".goal_tolerance", rclcpp::ParameterValue(0.15));
+  // node->get_parameter(plugin_name_ + ".goal_tolerance", goal_tolerance_);
+  // declare_parameter_if_not_declared(node, plugin_name_ + ".kp_rot", rclcpp::ParameterValue(1.0));
+  // node->get_parameter(plugin_name_ + ".kp_rot", kp_rot_);
 
   double controller_freqency;
   node->get_parameter("controller_frequency", controller_freqency);
-  dt = 1 / controller_freqency;
 
   RCLCPP_INFO(logger_, "FollowTrajectory initialized!");
 
@@ -103,14 +98,41 @@ void FollowTrajectory::setPlan(const nav_msgs::msg::Path& path)
   RCLCPP_INFO(logger_, "Got new plan");
   global_plan_ = path;
   global_trajectory = path2trajectory(global_plan_);
-  // alglib::real_1d_array P_time, P_x, P_y;
-  // getPArray(global_trajectory, P_time, P_x, P_y);
-  // alglib::spline1dbuildcubic(P_time, P_x, cubicspline_x);
-  // alglib::spline1dbuildcubic(P_time, P_y, P_time.length(), 1, 0.0, 1, 0.0, cubicspline_y, alglib::xdefault);
+
+  std::vector<double> P_time, P_x, P_y;
+  getPArray(global_trajectory, P_time, P_x, P_y);
+  goal_time = P_time.back();
+
+  size_t n = P_time.size();
+  if (cspline_x) {
+    gsl_spline_free(cspline_x);
+  }
+  if (cspline_y) {
+    gsl_spline_free(cspline_y);
+  }
+  if (acc_x) {
+    gsl_interp_accel_free(acc_x);
+  }
+  if (acc_y) {
+    gsl_interp_accel_free(acc_y);
+  }
+  cspline_x = gsl_spline_alloc(gsl_interp_cspline, n);
+  cspline_y = gsl_spline_alloc(gsl_interp_cspline, n);
+  acc_x = gsl_interp_accel_alloc();
+  acc_y = gsl_interp_accel_alloc();
+  gsl_spline_init(cspline_x, P_time.data(), P_x.data(), n);
+  gsl_spline_init(cspline_y, P_time.data(), P_y.data(), n);
+
+  // double a = gsl_spline_eval(cspline_x, 10.2, acc_x);
+  // double b = gsl_spline_eval_deriv(cspline_x, 10.2, acc_x);
+  // RCLCPP_INFO(logger_, "!!!!!!!!!!TEST: a = %.2f, b = %.2f", a, b);
 
   // integrator initialization
   integrator_x = 0.0;
   integrator_y = 0.0;
+  loop_index = 0;
+  rclcpp::Time now = clock_->now();
+  start_time = now.seconds();
 
 }
 
@@ -130,63 +152,52 @@ geometry_msgs::msg::TwistStamped FollowTrajectory::computeVelocityCommands(const
    RCLCPP_WARN(logger_, "Unable to retrieve goal checker's tolerances!");
   }
 
-  // get speed
+  // get info
   double vt = std::hypot(speed.linear.x, speed.linear.y);
   double wt = speed.angular.z;
   double theta = tf2::getYaw(pose.pose.orientation);
+  rclcpp::Time now = clock_->now();
+  double current_time = now.seconds() - start_time;
+  if (current_time > goal_time) current_time = goal_time;
 
-  //  edit command message
+  // edit command message
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header.frame_id = pose.header.frame_id;
   cmd_vel.header.stamp = clock_->now();
-
-
-  // control orientation at goal
-  geometry_msgs::msg::PoseStamped goal_pose = global_plan_.poses[global_plan_.poses.size() - 1];
-  double goal_dist = nav2_util::geometry_utils::euclidean_distance(pose.pose.position, goal_pose.pose.position);
-  if (goal_dist < goal_tolerance_) {
-    cmd_vel.twist.linear.x = 0.0;
-    double d_theta = tf2::getYaw(goal_pose.pose.orientation) - theta;
-    while (d_theta > M_PI) d_theta -= 2 * M_PI; 
-    while (d_theta < -M_PI) d_theta += 2 * M_PI; 
-    angular_vel = kp_rot_ * d_theta;
-    cmd_vel.twist.angular.z = std::max(-max_vel_angular_, std::min(angular_vel, max_vel_angular_));
-    return cmd_vel;
-  }
-
-  // get target point
-  size_t closest_idx = global_plan_.poses.size() - 1;
-  for (size_t i = 0; i < global_plan_.poses.size(); i++) {
-    double dist = nav2_util::geometry_utils::euclidean_distance(pose.pose.position, global_plan_.poses[i].pose.position);
-    if (dist >= lookahead_) {
-      closest_idx = i;
-      break;
-    }
-  }
-  geometry_msgs::msg::PoseStamped target_pose = global_plan_.poses[closest_idx];
 
   // feedback linearization
   // calculate point P
   geometry_msgs::msg::PoseStamped preview_point; 
   preview_point.pose.position.x = pose.pose.position.x + preview_length_ * cos(theta); 
-  preview_point.pose.position.y = pose.pose.position.y + preview_length_ * sin(theta); 
+  preview_point.pose.position.y = pose.pose.position.y + preview_length_ * sin(theta);
 
-  // PI controller
-  double dx = target_pose.pose.position.x - preview_point.pose.position.x;
-  double dy = target_pose.pose.position.y - preview_point.pose.position.y;
-  integrator_x += dt * dx;
-  integrator_y += dt * dy;
-  double v_xp = kp_ * dx + ki_ * integrator_x; 
-  double v_yp = kp_ * dy + ki_ * integrator_y; 
+  // FF + PI controller
+  if (loop_index % pi_freq_ratio_ == 0) {
+    double desire_x = gsl_spline_eval(cspline_x, current_time, acc_x);
+    double desire_y = gsl_spline_eval(cspline_y, current_time, acc_y);
+    double desire_xd = gsl_spline_eval_deriv(cspline_x, current_time, acc_x);
+    double desire_yd = gsl_spline_eval_deriv(cspline_y, current_time, acc_y);
+
+    double dx = desire_x - preview_point.pose.position.x;
+    double dy = desire_y - preview_point.pose.position.y;
+    integrator_x += dx;
+    integrator_y += dy;
+
+    v_xp = desire_xd + kp_ * dx + ki_ * integrator_x; 
+    v_yp = desire_yd + kp_ * dy + ki_ * integrator_y;
+
+  }
 
   // kinematic model linearization
   linear_vel = v_xp * cos(theta) + v_yp * sin(theta);
   angular_vel = (v_yp * cos(theta) - v_xp * sin(theta)) / preview_length_;
 
   // limit speed
-  cmd_vel.twist.linear.x = std::max(-max_vel_linear_, std::min(linear_vel, max_vel_linear_));
   cmd_vel.twist.angular.z = std::max(-max_vel_angular_, std::min(angular_vel, max_vel_angular_));
+  double linear_limit = limitSpeed(cmd_vel.twist.angular.z, max_vel_angular_, max_vel_linear_);
+  cmd_vel.twist.linear.x = std::max(-linear_limit, std::min(linear_vel, linear_limit));
 
+  loop_index++;
   return cmd_vel;
 }
 
@@ -201,13 +212,15 @@ double FollowTrajectory::limitSpeed(const double& expected_angular_speed, const 
   return limit_linear_speed;
 }
 
-nav_msgs::msg::Path FollowTrajectory::path2trajectory(nav_msgs::msg::Path global_path)
+nav_msgs::msg::Path FollowTrajectory::path2trajectory(nav_msgs::msg::Path& global_path)
 { 
   size_t path_length = global_path.poses.size();
 
   double point_time = 0.0;
-  rclcpp::Time ros_time(point_time, RCL_ROS_TIME);
-  global_path.poses[0].header.stamp = ros_time;
+  int32_t point_time_s = static_cast<int32_t>(point_time);
+  uint32_t point_time_ns = static_cast<uint32_t>((point_time - point_time_s) * 1e9);
+  global_path.poses[0].header.stamp.sec = point_time_s;
+  global_path.poses[0].header.stamp.nanosec = point_time_ns;
 
   global_path.poses[0].pose.orientation.z = tf2::getYaw(global_path.poses[0].pose.orientation);
   global_path.poses[path_length - 1].pose.orientation.z = tf2::getYaw(global_path.poses[path_length - 1].pose.orientation);
@@ -226,25 +239,31 @@ nav_msgs::msg::Path FollowTrajectory::path2trajectory(nav_msgs::msg::Path global
     double d_distance = nav2_util::geometry_utils::euclidean_distance(global_path.poses[i].pose.position, global_path.poses[i - 1].pose.position);
     interval_time = d_yaw / max_vel_angular_ + d_distance / max_vel_linear_;
     point_time += interval_time;
-    rclcpp::Time ros_time(point_time, RCL_ROS_TIME);
-    global_path.poses[i].header.stamp = ros_time;
+    int32_t point_time_s = static_cast<int32_t>(point_time);
+    uint32_t point_time_ns = static_cast<uint32_t>((point_time - point_time_s) * 1e9);
+    global_path.poses[i].header.stamp.sec = point_time_s;
+    global_path.poses[i].header.stamp.nanosec = point_time_ns;
   }
 
   return global_path;
 }
 
-// void FollowTrajectory::getPArray(const nav_msgs::msg::Path& global_trajectory, alglib::real_1d_array& P_time, alglib::real_1d_array& P_x, alglib::real_1d_array& P_y)
-// {
-//   size_t trajectory_length = global_trajectory.poses.size();
-//   P_time.setlength(trajectory_length);
-//   P_x.setlength(trajectory_length);
-//   P_y.setlength(trajectory_length);
-//   for (size_t i = 0; i < trajectory_length; i++) {
-//     P_time[i] = 1.0 * global_trajectory.poses[i].header.stamp.sec + 1e-9 * global_trajectory.poses[i].header.stamp.nanosec;
-//     P_x[i] = global_trajectory.poses[i].pose.position.x + preview_length_ * cos(global_trajectory.poses[i].pose.orientation.z); 
-//     P_y[i] = global_trajectory.poses[i].pose.position.y + preview_length_ * sin(global_trajectory.poses[i].pose.orientation.z);
-//   }
-// }
+void FollowTrajectory::getPArray(const nav_msgs::msg::Path& global_trajectory, std::vector<double>& P_time, std::vector<double>& P_x, std::vector<double>& P_y)
+{
+  size_t trajectory_length = global_trajectory.poses.size();
+  P_time.clear();
+  P_x.clear();
+  P_y.clear();
+  P_time.resize(trajectory_length);
+  P_x.resize(trajectory_length);
+  P_y.resize(trajectory_length);
+  for (size_t i = 0; i < trajectory_length; i++) {
+    P_time[i] = 1.0 * global_trajectory.poses[i].header.stamp.sec + 1e-9 * global_trajectory.poses[i].header.stamp.nanosec;
+    P_x[i] = global_trajectory.poses[i].pose.position.x + preview_length_ * cos(global_trajectory.poses[i].pose.orientation.z); 
+    P_y[i] = global_trajectory.poses[i].pose.position.y + preview_length_ * sin(global_trajectory.poses[i].pose.orientation.z);
+    if (i != 0 && P_time[i]<= P_time[i - 1]) P_time[i] = P_time[i - 1] + 0.01; 
+  }
+}
 
 }  // namespace tong_controller
 

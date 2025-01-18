@@ -13,6 +13,8 @@ find_package(nav_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+# find_package(ALGLIB REQUIRED)
+find_package(GSL REQUIRED)
 
 include_directories(
   include
@@ -30,6 +32,7 @@ set(dependencies
   nav2_core
   tf2
   tf2_geometry_msgs
+  GSL
 )
 
 add_library(${library_name} SHARED
@@ -38,8 +41,12 @@ add_library(${library_name} SHARED
 )
 
 ament_target_dependencies(${library_name}
+  # PUBLIC
   ${dependencies}
 )
+
+# target_link_libraries(${library_name} PRIVATE ALGLIB)
+target_link_libraries(${library_name} GSL::gsl GSL::gslcblas)
 
 pluginlib_export_plugin_description_file(nav2_core tong_controller_plugin.xml)
 

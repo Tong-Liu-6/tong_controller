@@ -14,6 +14,7 @@
 #include "nav2_util/geometry_utils.hpp"
 #include "geometry_msgs/msg/pose2_d.hpp"
 // #include "interpolation.h"
+#include <gsl/gsl_spline.h>
 
 namespace tong_controller
 {
@@ -43,8 +44,8 @@ public:
   void setSpeedLimit(const double& speed_limit, const bool& percentage) override;
 
   double limitSpeed(const double& expected_angular_speed, const double& max_angular_speed, const double& max_linear_speed);
-  nav_msgs::msg::Path path2trajectory(nav_msgs::msg::Path global_path);
-  // void getPArray(const nav_msgs::msg::Path& global_trajectory, alglib::real_1d_array& P_time, alglib::real_1d_array& P_x, alglib::real_1d_array& P_y);
+  nav_msgs::msg::Path path2trajectory(nav_msgs::msg::Path& global_path);
+  void getPArray(const nav_msgs::msg::Path& global_trajectory, std::vector<double>& P_time, std::vector<double>& P_x, std::vector<double>& P_y);
 
 private:
 
@@ -63,14 +64,20 @@ protected:
   std::string base_frame_, map_frame_;
   double max_vel_linear_, max_vel_angular_, preview_length_; 
   nav_msgs::msg::Path global_trajectory;
-  // alglib::spline1dinterpolant cubicspline_x, cubicspline_y;
+  gsl_spline *cspline_x = nullptr; 
+  gsl_spline *cspline_y = nullptr; 
+  gsl_interp_accel *acc_x = nullptr; 
+  gsl_interp_accel *acc_y = nullptr; 
+  double integrator_x, integrator_y, start_time, goal_time;
+  int pi_freq_ratio_, loop_index;
+  double kp_, ki_;
+  double v_xp, v_yp;
 
 
 
-
-  double kp_, kp_rot_, ki_, lookahead_, goal_tolerance_; 
+  // double kp_rot_, lookahead_, goal_tolerance_; 
   
-  double dt, integrator_x, integrator_y;
+  
   double v, omega;
   double linear_vel, angular_vel;
 
