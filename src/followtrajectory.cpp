@@ -52,7 +52,7 @@ void FollowTrajectory::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr&
   // declare_parameter_if_not_declared(node, plugin_name_ + ".lookahead", rclcpp::ParameterValue(0.25));
   // node->get_parameter(plugin_name_ + ".lookahead", lookahead_);
   // goal orientation (P controller)
-  // declare_parameter_if_not_declared(node, plugin_name_ + ".goal_tolerance", rclcpp::ParameterValue(0.15));
+  // declare_parameter_if_not_declared(node, plugin_name_ + ".goal_tolerance", rclcpp::ParameterValue(0.1));
   // node->get_parameter(plugin_name_ + ".goal_tolerance", goal_tolerance_);
   // declare_parameter_if_not_declared(node, plugin_name_ + ".kp_rot", rclcpp::ParameterValue(1.0));
   // node->get_parameter(plugin_name_ + ".kp_rot", kp_rot_);
@@ -165,6 +165,19 @@ geometry_msgs::msg::TwistStamped FollowTrajectory::computeVelocityCommands(const
   cmd_vel.header.frame_id = pose.header.frame_id;
   cmd_vel.header.stamp = clock_->now();
 
+  // control orientation at goal
+  // geometry_msgs::msg::PoseStamped goal_pose = global_plan_.poses[global_plan_.poses.size() - 1];
+  // double goal_dist = nav2_util::geometry_utils::euclidean_distance(pose.pose.position, goal_pose.pose.position);
+  // if (goal_dist < goal_tolerance_) {
+  //   cmd_vel.twist.linear.x = 0.0;
+  //   double d_theta = tf2::getYaw(goal_pose.pose.orientation) - theta;
+  //   while (d_theta > M_PI) d_theta -= 2 * M_PI; 
+  //   while (d_theta < -M_PI) d_theta += 2 * M_PI; 
+  //   angular_vel = kp_rot_ * d_theta;
+  //   cmd_vel.twist.angular.z = std::max(-max_vel_angular_, std::min(angular_vel, max_vel_angular_));
+  //   return cmd_vel;
+  // }
+
   // feedback linearization
   // calculate point P
   geometry_msgs::msg::PoseStamped preview_point; 
@@ -212,7 +225,7 @@ double FollowTrajectory::limitSpeed(const double& expected_angular_speed, const 
   return limit_linear_speed;
 }
 
-nav_msgs::msg::Path FollowTrajectory::path2trajectory(nav_msgs::msg::Path& global_path)
+nav_msgs::msg::Path FollowTrajectory::path2trajectory(nav_msgs::msg::Path global_path)
 { 
   size_t path_length = global_path.poses.size();
 

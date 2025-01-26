@@ -3,16 +3,17 @@
 
 #include <string>
 #include <vector>
-#include <memory>
-#include <algorithm>
 #include <mutex>
+// #include <interpolation.h>
+#include <gsl/gsl_spline.h>
 
 #include "nav2_costmap_2d/footprint_collision_checker.hpp"
 #include "nav2_core/controller.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "nav2_util/odometry_utils.hpp"
-#include "nav2_util/geometry_utils.hpp"
-#include "geometry_msgs/msg/pose2_d.hpp"
+#include "pluginlib/class_list_macros.hpp"
+
+#include "MPC_diffDrive_fblin.h"
+
 
 namespace tong_controller
 {
@@ -23,9 +24,10 @@ public:
   TrackedMPC() = default;
   ~TrackedMPC() override = default;
 
-  void configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& parent, std::string name,
-                 std::shared_ptr<tf2_ros::Buffer> tf,
-                 std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros) override;
+  void configure(
+    const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
+    std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
+    std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros) override;
 
   void cleanup() override;
 
@@ -33,39 +35,68 @@ public:
 
   void deactivate() override;
 
-  geometry_msgs::msg::TwistStamped computeVelocityCommands(const geometry_msgs::msg::PoseStamped& pose,
-                                                           const geometry_msgs::msg::Twist& velocity,
-                                                           nav2_core::GoalChecker* /*goal_checker*/) override;
+  geometry_msgs::msg::TwistStamped computeVelocityCommands(
+    const geometry_msgs::msg::PoseStamped & pose,
+    const geometry_msgs::msg::Twist & velocity,
+    nav2_core::GoalChecker * /*goal_checker*/) override;
 
-  void setPlan(const nav_msgs::msg::Path& path) override;
+  void setPlan(const nav_msgs::msg::Path & path) override;
 
-  void setSpeedLimit(const double& speed_limit, const bool& percentage) override;
-
-private:
+  void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
 
 protected:
+  // Callback executed when a parameter change is detected
+  rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
+
+  void interpolateTrajectory(double t, double& x, double& y, double& yaw);
+
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
-  nav2_costmap_2d::Costmap2D* costmap_;
-  rclcpp::Logger logger_{ rclcpp::get_logger("TrackedMPC") };
+  nav2_costmap_2d::Costmap2D * costmap_;
+  rclcpp::Logger logger_ {rclcpp::get_logger("TrackedMPC")};
   rclcpp::Clock::SharedPtr clock_;
-  nav_msgs::msg::Path global_plan_;
-  std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D*>> collision_checker_;
 
-  // Controller params
-  std::string base_frame_, map_frame_;
-  double kp_, kp_rot_, ki_, lookahead_, preview_, goal_tolerance_; 
-  double max_vel_linear_, max_vel_angular_; 
-  double dt, integrator_x, integrator_y;
-  double v, omega;
-  double linear_vel, angular_vel;
+  // Controller configuration parameters
+  int prediction_horizon_;
+  double q_, r_, p_dist_;
+  int max_infeasible_sol_;
+  double next_goal_threshold_;
+  bool use_tracking_controller_;
+  double path_sampling_threshold_;
+  double MPC_frequency_, fblin_frequency_;
+  double w_min_, w_max_, acc_lin_max_, wheel_radius_, track_width_;
+
+  // Controller internal parameters
+  int MPC_execution_counter_;
+  double max_linear_velocity, max_angular_velocity;
+
+  MPC_diffDrive_fblin* MPCcontroller;
+
+  double path_duration_, path_length_;
+  // alglib::spline1dinterpolant path_sp_x_, path_sp_y_, path_sp_yaw_;
+  gsl_spline *cspline_x = nullptr; 
+  gsl_spline *cspline_y = nullptr;
+  gsl_spline *cspline_yaw = nullptr;  
+  gsl_interp_accel *acc_x = nullptr; 
+  gsl_interp_accel *acc_y = nullptr; 
+  gsl_interp_accel *acc_yaw = nullptr; 
+
+  std::vector<double> path_x_, path_y_, path_yaw_;
+  long unsigned int path_idx_, path_time_;
+
+  std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>  collision_checker_;
 
   // Dynamic parameters handler
   std::mutex mutex_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
+
+  // Publishers for debugging purpose
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>> next_goal_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> reference_path_pub_;
 };
 
-}  // namespace tong_controller
+}  
 
-#endif
+#endif  
