@@ -77,11 +77,12 @@ void MPC_diffDrive_fblin::set_FBLINparams(double samplingTime, double pointPdist
     _FBLINparamsInitialized = true;
 }
 
-void MPC_diffDrive_fblin::set_robotParams(double wheelVelMax, double wheelVelMin, double wheelRadius, double track) {
+void MPC_diffDrive_fblin::set_robotParams(double wheelVelMax, double wheelVelMin, double wheelRadius, double track, double wheelAccMax) {
     // Set robot parameters
     _wheelVelMax = wheelVelMax;
     _wheelVelMin = wheelVelMin;
     _wheelRadius = wheelRadius;
+    _wheelAccMax = wheelAccMax;
     _track = track;
 
     // Set the initialization flag
@@ -127,8 +128,8 @@ bool MPC_diffDrive_fblin::initialize() {
 
     _H = Eigen::MatrixXd::Zero(2*_N, 2*_N);
     _f = Eigen::VectorXd::Zero(2*_N);
-    _Ain_vel = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
-    _Bin_vel = Eigen::VectorXd::Zero(2*2*_N);
+    // _Ain_tot = Eigen::MatrixXd::Zero(2*2*_N + 2*2*_N, 2*_N);
+    // _Bin_tot = Eigen::VectorXd::Zero(2*2*_N + 2*2*_N);
 
     // Initialize actual and reference data
     _actX = _actY = _actYaw = 0.0;
@@ -136,6 +137,7 @@ bool MPC_diffDrive_fblin::initialize() {
     _predictRobotState = Eigen::VectorXd::Zero(3*(_N+1));
     _refMPCstate = Eigen::VectorXd::Zero(2*(_N+1));
     _optimVect = Eigen::VectorXd::Zero(2*_N);
+    pre_vPx = pre_vPy = 0.0;
 
     // Initialize the solver
     _solver = new GUROBIsolver(GUROBI_LICENSEID, GUROBI_USERNAME);
@@ -191,16 +193,16 @@ bool MPC_diffDrive_fblin::executeMPCcontroller() {
     }
 
     // Compute constraint matrices
-    compute_wheelVelocityConstraint();
-    if (wheelVelocityConstrain.size()==0) {
-        if (!_solver->addConstraint(_Ain_vel, _Bin_vel, wheelVelocityConstrain))
+    compute_constraintMatrix();
+    if (constraintMatrix.size()==0) {
+        if (!_solver->addConstraint(_Ain_tot, _Bin_tot, constraintMatrix))
         {
             errorMsg("[MPC_diffDrive_fblin.executeMPCcontroller] Error setting the wheel velocity constraint");
             return false;
         }
     }
     else {
-        if (!_solver->modifyConstraint(_Ain_vel, _Bin_vel, wheelVelocityConstrain))
+        if (!_solver->modifyConstraint(_Ain_tot, _Bin_tot, constraintMatrix))
         {
             errorMsg("[MPC_diffDrive_fblin.executeMPCcontroller] Error setting the wheel velocity constraint");
             return false;
@@ -232,6 +234,9 @@ bool MPC_diffDrive_fblin::executeMPCcontroller() {
         }
         return false;
     }
+
+    pre_vPx = _optimVect(0);
+    pre_vPy = _optimVect(1);
 
     return true;
 }
@@ -380,12 +385,14 @@ void MPC_diffDrive_fblin::compute_objectiveMatrix() {
 //    saveMatrixToFile("f_matrix.csv", _f);
 }
 
-void MPC_diffDrive_fblin::compute_wheelVelocityConstraint() {
-    // Initialize Ain_vel and Bin_vel matrices
-    _Ain_vel = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
-    _Bin_vel = Eigen::VectorXd::Zero(2*2*_N);
+void MPC_diffDrive_fblin::compute_constraintMatrix() {
+    // Initialize Ain_tot and Bin_tot matrices
+    _Ain_tot = Eigen::MatrixXd::Zero(2*2*_N + 2*2*_N, 2*_N);
+    _Bin_tot = Eigen::VectorXd::Zero(2*2*_N + 2*2*_N);
 
-    // Compute constraint matrices
+    // Compute velocity constraint matrices
+    Eigen::MatrixXd _Ain_vel = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
+    Eigen::VectorXd _Bin_vel = Eigen::VectorXd::Zero(2*2*_N);
     for (auto k=0; k<_N; k++) {
         Eigen::Matrix2d Abar {{2.0*std::cos(_predictRobotState(3*k+2))-_track/_Pdist*std::sin(_predictRobotState(3*k+2)),
                                2.0*std::sin(_predictRobotState(3*k+2))+_track/_Pdist*std::cos(_predictRobotState(3*k+2))},
@@ -399,10 +406,46 @@ void MPC_diffDrive_fblin::compute_wheelVelocityConstraint() {
         _Bin_vel(2*(k+_N)) = -_wheelVelMin*2.0*_wheelRadius;
         _Bin_vel(2*(k+_N)+1) = -_wheelVelMin*2.0*_wheelRadius;
     }
+    _Bin_vel(2*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    _Bin_vel(2*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    _Bin_vel(4*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    _Bin_vel(4*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+
+    // Compute acceleration constraint matrices
+    Eigen::MatrixXd _Ain_acc = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
+    Eigen::VectorXd _Bin_acc = Eigen::VectorXd::Zero(2*2*_N);
+
+    Eigen::MatrixXd A_var = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
+    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(2*_N, 2*_N);
+    A_var.block(0, 0, 2 * _N, 2 * _N) = I;
+    A_var.block(2 * _N, 0, 2 * _N, 2 * _N) = -I;
+
+    Eigen::VectorXd d_V = Eigen::VectorXd::Constant(2*2*_N, _wheelAccMax*_wheelRadius*_MPC_Ts);
+
+    Eigen::VectorXd v0 = Eigen::VectorXd::Zero(2*_N);
+    v0(0) = pre_vPx;
+    v0(1) = pre_vPy;
+
+    Eigen::MatrixXd V = Eigen::MatrixXd::Zero(2*_N, 2*_N);
+    V(0, 0) = 1;
+    V(1, 1) = 1;
+    for (auto k=2; k<2*_N; k++) {
+        V(k, k) = 1;
+        V(k, k-2) = -1;
+    }
+
+    _Ain_acc = A_var * V;
+    _Bin_acc = d_V + A_var * v0;
+
+    // Assemble constraint matrices
+    _Ain_tot.block(0, 0, 2*2*_N, 2*_N) = _Ain_vel;
+    _Ain_tot.block(2*2*_N, 0, 2*2*_N, 2*_N) = _Ain_acc;
+    _Bin_tot.head(2*2*_N) = _Bin_vel;
+    _Bin_tot.tail(2*2*_N) = _Bin_acc;
 
     // Check matrix
-//    saveMatrixToFile("Ain_vel_matrix.csv", _Ain_vel);
-//    saveMatrixToFile("Bin_vel_matrix.csv", _Bin_vel);
+//    saveMatrixToFile("Ain_tot_matrix.csv", _Ain_tot);
+//    saveMatrixToFile("Bin_tot_matrix.csv", _Bin_tot);
 }
 
 void MPC_diffDrive_fblin::saveMatrixToFile(std::string fileName, Eigen::MatrixXd matrix) {
@@ -444,4 +487,10 @@ void MPC_diffDrive_fblin::debugMsg(const std::string& message) {
     if (_debug) {
         _debug(message);
     }
+}
+
+void MPC_diffDrive_fblin::reset_pre_vP()
+{
+    pre_vPx = 0.0;
+    pre_vPy = 0.0;
 }

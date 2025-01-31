@@ -43,7 +43,7 @@ public:
      * @param wheelRadius wheel nominal radius
      * @param track distance between wheel contact points
      */
-    void set_robotParams(double wheelVelMax, double wheelVelMin, double wheelRadius, double track);
+    void set_robotParams(double wheelVelMax, double wheelVelMin, double wheelRadius, double track, double wheelAccMax);
 
     /**
      * @brief Set MPC controller parameters
@@ -145,6 +145,8 @@ public:
     void set_InfoMsgCallback(InfoMsgCallback callback);
     void set_DebugMsgCallback(DebugMsgCallback callback);
 
+    void reset_pre_vP();
+
 private:
     // MPC parameters
     int _N;
@@ -159,8 +161,8 @@ private:
     Eigen::MatrixXd _Qcal, _Rcal;
     Eigen::MatrixXd _H;
     Eigen::VectorXd _f;
-    Eigen::MatrixXd _Ain_vel;
-    Eigen::VectorXd _Bin_vel;
+    Eigen::MatrixXd _Ain_tot;
+    Eigen::VectorXd _Bin_tot;
 
     double _actXP, _actYP, _actX, _actY, _actYaw;
     Eigen::VectorXd _predictRobotState, _refMPCstate, _optimVect;
@@ -176,14 +178,16 @@ private:
     // Robot parameters
     double _wheelVelMax, _wheelVelMin;
     double _track, _wheelRadius;
+    double _wheelAccMax;
     bool _robotParamsInitialized;
 
     // Controller variables
     bool _controllerInitialized;
     double _linearVelocity, _angularVelocity;
+    double pre_vPx, pre_vPy;
 
     // Controller constraints
-    std::vector<GRBConstr> wheelVelocityConstrain;
+    std::vector<GRBConstr> constraintMatrix;
 
     // Message handler function pointers
     DebugMsgCallback _debug;
@@ -196,13 +200,14 @@ private:
     void compute_QcalMatrix();
     void compute_RcalMatrix();
     void compute_objectiveMatrix();
-    void compute_wheelVelocityConstraint();
+    void compute_constraintMatrix();
 
     void saveMatrixToFile(std::string fileName, Eigen::MatrixXd matrix);
 
     void errorMsg(const std::string &message);
     void infoMsg(const std::string &message);
     void debugMsg(const std::string &message);
+
 };
 
 #endif //MPC_DIFFDRIVE_FBLIN_H

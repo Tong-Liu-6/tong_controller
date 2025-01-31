@@ -136,7 +136,7 @@ namespace tong_controller {
 
         MPCcontroller->set_MPCparams(1.0/MPC_frequency_, prediction_horizon_, q_, r_);
         MPCcontroller->set_FBLINparams(1.0/fblin_frequency_, p_dist_);
-        MPCcontroller->set_robotParams(w_max_, w_min_, wheel_radius_, track_width_);
+        MPCcontroller->set_robotParams(w_max_, w_min_, wheel_radius_, track_width_, acc_lin_max_/wheel_radius_);
 
         if (!MPCcontroller->initialize()) {
             RCLCPP_ERROR(logger_, "Unable to initialize MPC controller");
@@ -400,6 +400,9 @@ namespace tong_controller {
             // Initialize path index
             path_idx_ = 0;
         }
+
+        MPCcontroller->reset_pre_vP();
+        
     }
 
     void TrackedMPC::setSpeedLimit(const double &speed_limit, const bool &percentage) {
