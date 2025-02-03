@@ -146,6 +146,7 @@ public:
     void set_DebugMsgCallback(DebugMsgCallback callback);
 
     void reset_pre_vP();
+    void set_obstacleConstraint(int obstacle_flag, double Ax, double Ay, double B);
 
 private:
     // MPC parameters
@@ -153,6 +154,7 @@ private:
     double _MPC_Ts;
     double _q, _r, _k, _p;
     bool _MPCparamsInitialized;
+    double A_obs_x, A_obs_y, B_obs;
 
     Eigen::MatrixXd _plant_A, _plant_B;
     std::vector<double> _lowerBound, _upperBound;

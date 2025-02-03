@@ -57,10 +57,6 @@ namespace tong_controller {
         if (false == node->get_parameter(plugin_name_ + ".prediction_horizon", prediction_horizon_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "prediction_horizon");
 
-        declare_parameter_if_not_declared(node, plugin_name_ + ".use_tracking_controller", rclcpp::ParameterValue(false));
-        if (false == node->get_parameter(plugin_name_ + ".use_tracking_controller", use_tracking_controller_))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "use_tracking_controller");
-
         declare_parameter_if_not_declared(node, plugin_name_ + ".MPC_frequency", rclcpp::ParameterValue(10.0));
         if (false == node->get_parameter(plugin_name_ + ".MPC_frequency", MPC_frequency_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "MPC_frequency");
@@ -80,6 +76,10 @@ namespace tong_controller {
         declare_parameter_if_not_declared(node, plugin_name_ + ".max_infeasible_sol", rclcpp::ParameterValue(5));
         if (false == node->get_parameter(plugin_name_ + ".max_infeasible_sol", max_infeasible_sol_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "max_infeasible_sol");
+
+        declare_parameter_if_not_declared(node, plugin_name_ + ".obstacle_threshold", rclcpp::ParameterValue(250));
+        if (false == node->get_parameter(plugin_name_ + ".obstacle_threshold", obstacle_threshold_))
+            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "obstacle_threshold");
 
         declare_parameter_if_not_declared(node, plugin_name_ + ".w_min", rclcpp::ParameterValue(-0.1));
         if (false == node->get_parameter(plugin_name_ + ".w_min", w_min_))
@@ -101,21 +101,12 @@ namespace tong_controller {
         if (false == node->get_parameter(plugin_name_ + ".track_width", track_width_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "track_width");
 
-        declare_parameter_if_not_declared(node, plugin_name_ + ".path_sampling_threshold", rclcpp::ParameterValue(1.0));
-        if (false == node->get_parameter(plugin_name_ + ".path_sampling_threshold", path_sampling_threshold_))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "path_sampling_threshold");
-
-        declare_parameter_if_not_declared(node, plugin_name_ + ".next_goal_threshold", rclcpp::ParameterValue(0.1));
-        if (false == node->get_parameter(plugin_name_ + ".next_goal_threshold", next_goal_threshold_))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "next_goal_threshold");
-
         // Check parameter consistency
         if (std::fmod(fblin_frequency_, MPC_frequency_)!=0.0) {
             RCLCPP_ERROR(logger_, "MPC_frequency must be a multiple of controller_frequency");
         }
 
         // Create publishers
-        next_goal_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("next_goal_point", 1);
         reference_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("reference_path", 1);
 
         // Initialize collision checker and set costmap
@@ -150,7 +141,6 @@ namespace tong_controller {
         RCLCPP_INFO(logger_, "Cleaning up controller: %s of type tong_controller::TrackedMPC", plugin_name_.c_str());
 
         // Reset publishers
-        next_goal_pub_.reset();
         reference_path_pub_.reset();
 
         // Delete MPC controller object
@@ -163,7 +153,6 @@ namespace tong_controller {
         RCLCPP_INFO(logger_, "Activating controller: %s of type tong_controller::TrackedMPC", plugin_name_.c_str());
 
         // Activate publishers
-        next_goal_pub_->on_activate();
         reference_path_pub_->on_activate();
 
         // Add callback for dynamic parameters
@@ -176,7 +165,6 @@ namespace tong_controller {
         RCLCPP_INFO(logger_, "Deactivating controller: %s of type tong_controller::TrackedMPC", plugin_name_.c_str());
 
         // Deactivate publishers
-        next_goal_pub_->on_deactivate();
         reference_path_pub_->on_deactivate();
 
         // Reset dynamic parameter handler
@@ -191,6 +179,13 @@ namespace tong_controller {
         nav2_costmap_2d::Costmap2D *costmap = costmap_ros_->getCostmap();
         std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
 
+        // RCLCPP_INFO(logger_, "Costmap name: %s", costmap_ros_->getName().c_str());
+        // unsigned int mx, my;
+        // double wx = pose.pose.position.x, wy = pose.pose.position.y;  
+        // costmap->worldToMap(wx, wy, mx, my);  
+        // unsigned char cost = costmap->getCost(mx, my); 
+        // RCLCPP_INFO(logger_, "Cost: %u", static_cast<unsigned int>(cost));
+
         // Update controller state
         MPCcontroller->set_actualRobotState(pose.pose.position.x, pose.pose.position.y, tf2::getYaw(pose.pose.orientation));
 
@@ -198,84 +193,114 @@ namespace tong_controller {
         // TBD: Add replanning in case of too much MPC failures
         if (MPC_execution_counter_ == (int)fblin_frequency_/MPC_frequency_) {
             // Update MPC reference
-            if (use_tracking_controller_) {
-                // Check that a plan has been received
-                if ((path_duration_==0.0) || (path_length_==0.0)) {
-                    RCLCPP_ERROR(logger_, "No plan available, cannot start the controller");
+            // Check that a plan has been received
+            if ((path_duration_==0.0) || (path_length_==0.0)) {
+                RCLCPP_ERROR(logger_, "No plan available, cannot start the controller");
 
-                    // Set the reference equal to the actual pose
-                    MPCcontroller->set_referenceRobotState(pose.pose.position.x, pose.pose.position.y, tf2::getYaw(pose.pose.orientation));
-                } else {
-                    // Compute the reference robot state along the prediction horizon
-                    Eigen::VectorXd referenceRobotState;
-                    referenceRobotState.resize(3 * (prediction_horizon_ + 1), 1);
-                    for (long unsigned int k = 0; k < (long unsigned int)(prediction_horizon_ + 1); k++) {
-                        double x, y, yaw;
-                        interpolateTrajectory((path_time_+k)/MPC_frequency_, x, y, yaw);
-
-                        referenceRobotState(3 * k) = x;
-                        referenceRobotState(3 * k + 1) = y;
-                        referenceRobotState(3 * k + 2) = yaw;
-                    }
-
-                    // Update the path time
-                    path_time_++;
-
-                    // Update the MPC reference vector
-                    MPCcontroller->set_referenceRobotState(referenceRobotState);
-
-                    // Publish reference trajectory
-                    nav_msgs::msg::Path reference_path;
-                    reference_path.header.frame_id = pose.header.frame_id;
-                    reference_path.header.stamp = pose.header.stamp;
-                    for (long unsigned int k = 0; k < (long unsigned int) prediction_horizon_ + 1; k++) {
-                        geometry_msgs::msg::PoseStamped path_pose;
-                        path_pose.header.frame_id = "map";
-                        path_pose.header.stamp = pose.header.stamp;
-                        path_pose.pose.position.x = referenceRobotState(3*k);
-                        path_pose.pose.position.y = referenceRobotState(3 * k + 1);
-                        path_pose.pose.position.z = 0.0;
-                        tf2::Quaternion tf2_quat;
-                        tf2_quat.setRPY(0.0, 0.0, referenceRobotState(3 * k + 2));
-                        path_pose.pose.orientation = tf2::toMsg(tf2_quat);
-
-                        reference_path.poses.push_back(path_pose);
-                    }
-
-                    reference_path_pub_->publish(reference_path);
-                }
+                // Set the reference equal to the actual pose
+                MPCcontroller->set_referenceRobotState(pose.pose.position.x, pose.pose.position.y, tf2::getYaw(pose.pose.orientation));
             } else {
-                // Check that a plan has been received
-                if ((path_x_.size()==0) || (path_y_.size()==0) || (path_yaw_.size()==0)) {
-                    RCLCPP_ERROR(logger_, "No plan available, cannot start the controller");
+                // Compute the reference robot state along the prediction horizon
+                Eigen::VectorXd referenceRobotState;
+                referenceRobotState.resize(3 * (prediction_horizon_ + 1), 1);
+                for (int k = 0; k < prediction_horizon_ + 1; k++) {
+                    double x, y, yaw;
+                    interpolateTrajectory((path_time_+k)/MPC_frequency_, x, y, yaw);
 
-                    // Set the reference equal to the actual pose
-                    MPCcontroller->set_referenceRobotState(pose.pose.position.x, pose.pose.position.y, tf2::getYaw(pose.pose.orientation));
-                } else {
-                    // If I'm close enough to the goal I switch to next one
-                    if (std::pow(std::pow(pose.pose.position.x - path_x_.at(path_idx_), 2.0) +
-                                 std::pow(pose.pose.position.y - path_y_.at(path_idx_), 2.0), 0.5) < next_goal_threshold_ &&
-                        (path_idx_ < (path_x_.size() - 1))) {
-                        path_idx_++;
-                    }
-
-                    // Set the goal as current reference
-                    MPCcontroller->set_referenceRobotState(path_x_.at(path_idx_), path_y_.at(path_idx_),
-                                                           path_yaw_.at(path_idx_));
-
-                    // Publish goal pose
-                    geometry_msgs::msg::PoseStamped goal_pose;
-                    goal_pose.header.frame_id = "map";
-                    goal_pose.header.stamp = pose.header.stamp;
-                    goal_pose.pose.position.x = path_x_.at(path_idx_);
-                    goal_pose.pose.position.y = path_y_.at(path_idx_);
-                    goal_pose.pose.position.z = 0.0;
-                    tf2::Quaternion tf2_quat;
-                    tf2_quat.setRPY(0.0, 0.0, path_yaw_.at(path_idx_));
-                    goal_pose.pose.orientation = tf2::toMsg(tf2_quat);
-
-                    next_goal_pub_->publish(goal_pose);
+                    referenceRobotState(3 * k) = x;
+                    referenceRobotState(3 * k + 1) = y;
+                    referenceRobotState(3 * k + 2) = yaw;
                 }
+
+                // Compute Obstacle Avoidcance Constraint
+                int obstacle_flag = 0, obstacle_index = -1;
+                double obstacle_x, obstacle_y;
+                double Ax = 0.0, Ay = 0.0, B = 0.0;
+                unsigned int mx, my;
+                for (int k = 0; k < prediction_horizon_ + 1; k++) {
+                    double wx = referenceRobotState(3 * k); 
+                    double wy = referenceRobotState(3 * k + 1);
+                    costmap->worldToMap(wx, wy, mx, my);  
+                    unsigned char cost = costmap->getCost(mx, my);
+                    if (static_cast<unsigned int>(cost) >= obstacle_threshold_) {
+                        obstacle_flag = 1;
+                        obstacle_index = k;
+                        obstacle_x = wx; 
+                        obstacle_y = wy;
+                        break;
+                    }
+                }
+                if (obstacle_flag == 0) {
+                    MPCcontroller->set_obstacleConstraint(obstacle_flag, Ax, Ay, B);
+                } else {
+                    int imx = static_cast<int>(mx);
+                    int imy = static_cast<int>(my);
+                    std::vector<std::pair<int, int>> neighborSets = {
+                        {-1, -1},
+                        { 0, -1},
+                        { 1, -1},
+                        { 1,  0},
+                        { 1,  1},
+                        { 0,  1},
+                        {-1,  1},
+                        {-1,  0}
+                    };
+                    std::vector<unsigned int> neighborSetsCost(8);
+                    for (int ii = 0; ii < 8; ii++) {
+                        int nx1 = imx + neighborSets[ii].first;
+                        int ny1 = imy + neighborSets[ii].second;
+                        unsigned char cost1 = costmap->getCost(nx1, ny1);
+                        neighborSetsCost[ii] = static_cast<unsigned int>(cost1);
+                    }
+                    int count = 0;
+                    std::vector<int> neighborSetsIndex(2);
+                    for (int ii = 0; ii < 8; ii++) {
+                        if (neighborSetsCost[ii] >= obstacle_threshold_) {
+                            int jj1 = (ii + 7) % 8;
+                            int jj2 = (ii + 1) % 8;
+                            if (neighborSetsCost[jj1] < obstacle_threshold_ || neighborSetsCost[jj2] < obstacle_threshold_) {
+                                neighborSetsIndex[count] = ii;
+                                count++;
+                            }
+                        }
+                    }
+                    Ax = neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second;
+                    Ay = neighborSets[neighborSetsIndex[1]].first - neighborSets[neighborSetsIndex[0]].first;
+                    B = Ax * obstacle_x + Ay * obstacle_y;
+                    if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) obstacle_flag = -1;
+                    MPCcontroller->set_obstacleConstraint(obstacle_flag, Ax, Ay, B);
+                }
+
+
+
+
+
+
+                // Update the path time
+                path_time_++;
+
+                // Update the MPC reference vector
+                MPCcontroller->set_referenceRobotState(referenceRobotState);
+
+                // Publish reference trajectory
+                nav_msgs::msg::Path reference_path;
+                reference_path.header.frame_id = pose.header.frame_id;
+                reference_path.header.stamp = pose.header.stamp;
+                for (long unsigned int k = 0; k < (long unsigned int) prediction_horizon_ + 1; k++) {
+                    geometry_msgs::msg::PoseStamped path_pose;
+                    path_pose.header.frame_id = "map";
+                    path_pose.header.stamp = pose.header.stamp;
+                    path_pose.pose.position.x = referenceRobotState(3*k);
+                    path_pose.pose.position.y = referenceRobotState(3 * k + 1);
+                    path_pose.pose.position.z = 0.0;
+                    tf2::Quaternion tf2_quat;
+                    tf2_quat.setRPY(0.0, 0.0, referenceRobotState(3 * k + 2));
+                    path_pose.pose.orientation = tf2::toMsg(tf2_quat);
+
+                    reference_path.poses.push_back(path_pose);
+                }
+
+                reference_path_pub_->publish(reference_path);
             }
 
             // Execute MPC controller
@@ -303,103 +328,78 @@ namespace tong_controller {
     }
 
     void TrackedMPC::setPlan(const nav_msgs::msg::Path &path) {
-        if (use_tracking_controller_) {
-            // Natural coordinate computation
-            std::vector<double> path_x(path.poses.size(), 0.0);
-            std::vector<double> path_y(path.poses.size(), 0.0);
-            std::vector<double> path_yaw(path.poses.size(), 0.0);
-            std::vector<double> path_s(path.poses.size(), 0.0);
+        RCLCPP_INFO(logger_, "Got new plan");
 
-            path_x.at(0) = path.poses.at(0).pose.position.x;
-            path_y.at(0) = path.poses.at(0).pose.position.y;
-            path_yaw.at(0) = tf2::getYaw(path.poses.at(0).pose.orientation);
-            for (long unsigned int k=1; k<path.poses.size(); k++) {
-                path_s.at(k) = path_s.at(k-1)+
-                               std::pow(std::pow(path.poses.at(k).pose.position.x-path.poses.at(k-1).pose.position.x, 2.0)+
-                                        std::pow(path.poses.at(k).pose.position.y-path.poses.at(k-1).pose.position.y, 2.0), 0.5);
-                path_x.at(k) = path.poses.at(k).pose.position.x;
-                path_y.at(k) = path.poses.at(k).pose.position.y;
-                path_yaw.at(k) = tf2::getYaw(path.poses.at(k).pose.orientation);
+        // Natural coordinate computation
+        std::vector<double> path_x(path.poses.size(), 0.0);
+        std::vector<double> path_y(path.poses.size(), 0.0);
+        std::vector<double> path_yaw(path.poses.size(), 0.0);
+        std::vector<double> path_s(path.poses.size(), 0.0);
 
-                // s values must be strictly increasing for interpolation
-                if (path_s.at(k) <= path_s.at(k - 1)) path_s.at(k) = path_s.at(k - 1) + 0.01;
-            }
+        path_x.at(0) = path.poses.at(0).pose.position.x;
+        path_y.at(0) = path.poses.at(0).pose.position.y;
+        path_yaw.at(0) = tf2::getYaw(path.poses.at(0).pose.orientation);
+        for (long unsigned int k=1; k<path.poses.size(); k++) {
+            path_s.at(k) = path_s.at(k-1)+
+                            std::pow(std::pow(path.poses.at(k).pose.position.x-path.poses.at(k-1).pose.position.x, 2.0)+
+                                    std::pow(path.poses.at(k).pose.position.y-path.poses.at(k-1).pose.position.y, 2.0), 0.5);
+            path_x.at(k) = path.poses.at(k).pose.position.x;
+            path_y.at(k) = path.poses.at(k).pose.position.y;
+            path_yaw.at(k) = tf2::getYaw(path.poses.at(k).pose.orientation);
 
-            // Interpolation of the x, y, yaw components of the path with respect to the natural coordinate using a cubic spline
-            // try {
-            //     alglib::real_1d_array x, y, yaw, s;
-            //     x.setcontent(path_x.size(), &path_x[0]);
-            //     y.setcontent(path_y.size(), &path_y[0]);
-            //     yaw.setcontent(path_yaw.size(), &path_yaw[0]);
-            //     s.setcontent(path_s.size(), &path_s[0]);
-
-            //     spline1dbuildcubic(s, x, path_sp_x_);
-            //     spline1dbuildcubic(s, y, path_sp_y_);
-            //     spline1dbuildcubic(s, yaw, path_sp_yaw_);
-            // } catch(alglib::ap_error alglib_exception)
-            // {
-            //     RCLCPP_ERROR(logger_, "ALGLIB exception with message '%s'\n", alglib_exception.msg.c_str());
-            // }
-
-            size_t cspline_n = path_x.size();
-            if (cspline_x) {
-                gsl_spline_free(cspline_x);
-            }
-            if (cspline_y) {
-                gsl_spline_free(cspline_y);
-            }
-            if (cspline_yaw) {
-                gsl_spline_free(cspline_yaw);
-            }
-            if (acc_x) {
-                gsl_interp_accel_free(acc_x);
-            }
-            if (acc_y) {
-                gsl_interp_accel_free(acc_y);
-            }
-            if (acc_yaw) {
-                gsl_interp_accel_free(acc_yaw);
-            }
-            cspline_x = gsl_spline_alloc(gsl_interp_cspline, cspline_n);
-            cspline_y = gsl_spline_alloc(gsl_interp_cspline, cspline_n);
-            cspline_yaw = gsl_spline_alloc(gsl_interp_cspline, cspline_n);
-            acc_x = gsl_interp_accel_alloc();
-            acc_y = gsl_interp_accel_alloc();
-            acc_yaw = gsl_interp_accel_alloc();
-            gsl_spline_init(cspline_x, path_s.data(), path_x.data(), cspline_n);
-            gsl_spline_init(cspline_y, path_s.data(), path_y.data(), cspline_n);
-            gsl_spline_init(cspline_yaw, path_s.data(), path_yaw.data(), cspline_n);
-
-
-            // Computation of the path length and duration (according to the maximum velocity and acceleration)
-            path_length_ = path_s.back();
-            path_duration_ = std::fmax(1.5*path_length_/(w_max_*wheel_radius_), std::pow(6.0*path_length_/acc_lin_max_, 0.5));
-            path_time_ = 0;
-        } else {
-            // Clear all previous elements
-            path_x_.clear();
-            path_y_.clear();
-            path_yaw_.clear();
-
-            // Store the first element of the path
-            path_x_.push_back(path.poses.at(1).pose.position.x);
-            path_y_.push_back(path.poses.at(1).pose.position.y);
-            path_yaw_.push_back(tf2::getYaw(path.poses.at(1).pose.orientation));
-
-            // Sample the path with a distance path_sampling_threshold_
-            for (long unsigned int k=2; k<path.poses.size(); k++) {
-                if (std::pow(std::pow(path.poses.at(k).pose.position.x-path_x_.back(), 2.0)+
-                std::pow(path.poses.at(k).pose.position.y-path_y_.back(), 2.0), 0.5)>=path_sampling_threshold_ ||
-                k==path.poses.size()-1) {
-                    path_x_.push_back(path.poses.at(k).pose.position.x);
-                    path_y_.push_back(path.poses.at(k).pose.position.y);
-                    path_yaw_.push_back(tf2::getYaw(path.poses.at(k).pose.orientation));
-                }
-            }
-
-            // Initialize path index
-            path_idx_ = 0;
+            // s values must be strictly increasing for interpolation
+            if (path_s.at(k) <= path_s.at(k - 1)) path_s.at(k) = path_s.at(k - 1) + 0.01;
         }
+
+        // Interpolation of the x, y, yaw components of the path with respect to the natural coordinate using a cubic spline
+        // try {
+        //     alglib::real_1d_array x, y, yaw, s;
+        //     x.setcontent(path_x.size(), &path_x[0]);
+        //     y.setcontent(path_y.size(), &path_y[0]);
+        //     yaw.setcontent(path_yaw.size(), &path_yaw[0]);
+        //     s.setcontent(path_s.size(), &path_s[0]);
+
+        //     spline1dbuildcubic(s, x, path_sp_x_);
+        //     spline1dbuildcubic(s, y, path_sp_y_);
+        //     spline1dbuildcubic(s, yaw, path_sp_yaw_);
+        // } catch(alglib::ap_error alglib_exception)
+        // {
+        //     RCLCPP_ERROR(logger_, "ALGLIB exception with message '%s'\n", alglib_exception.msg.c_str());
+        // }
+
+        size_t cspline_n = path_x.size();
+        if (cspline_x) {
+            gsl_spline_free(cspline_x);
+        }
+        if (cspline_y) {
+            gsl_spline_free(cspline_y);
+        }
+        if (cspline_yaw) {
+            gsl_spline_free(cspline_yaw);
+        }
+        if (acc_x) {
+            gsl_interp_accel_free(acc_x);
+        }
+        if (acc_y) {
+            gsl_interp_accel_free(acc_y);
+        }
+        if (acc_yaw) {
+            gsl_interp_accel_free(acc_yaw);
+        }
+        cspline_x = gsl_spline_alloc(gsl_interp_cspline, cspline_n);
+        cspline_y = gsl_spline_alloc(gsl_interp_cspline, cspline_n);
+        cspline_yaw = gsl_spline_alloc(gsl_interp_cspline, cspline_n);
+        acc_x = gsl_interp_accel_alloc();
+        acc_y = gsl_interp_accel_alloc();
+        acc_yaw = gsl_interp_accel_alloc();
+        gsl_spline_init(cspline_x, path_s.data(), path_x.data(), cspline_n);
+        gsl_spline_init(cspline_y, path_s.data(), path_y.data(), cspline_n);
+        gsl_spline_init(cspline_yaw, path_s.data(), path_yaw.data(), cspline_n);
+
+        // Computation of the path length and duration (according to the maximum velocity and acceleration)
+        path_length_ = path_s.back();
+        path_duration_ = std::fmax(1.5*path_length_/(w_max_*wheel_radius_), std::pow(6.0*path_length_/acc_lin_max_, 0.5));
+        path_time_ = 0;
 
         MPCcontroller->reset_pre_vP();
         
@@ -452,20 +452,14 @@ namespace tong_controller {
                     wheel_radius_ = parameter.as_double();
                 } else if (name == plugin_name_ + ".track_width") {
                     track_width_ = parameter.as_double();
-                } else if (name == plugin_name_ + ".path_sampling_threshold") {
-                    path_sampling_threshold_ = parameter.as_double();
-                } else if (name == plugin_name_ + ".next_goal_threshold") {
-                    next_goal_threshold_ = parameter.as_double();
                 }
             } else if (type == ParameterType::PARAMETER_INTEGER) {
                 if (name == plugin_name_ + ".prediction_horizon") {
                     prediction_horizon_ = parameter.as_int();
                 } else if (name == plugin_name_ + ".max_infeasible_sol") {
                     max_infeasible_sol_ = parameter.as_int();
-                }
-            } else if (type == ParameterType::PARAMETER_BOOL) {
-                if (name == plugin_name_ + "use_tracking_controller") {
-                    use_tracking_controller_ = parameter.as_bool();
+                } else if (name == plugin_name_ + ".obstacle_threshold") {
+                    obstacle_threshold_ = parameter.as_int();
                 }
             }
         }
@@ -475,8 +469,10 @@ namespace tong_controller {
     }
 
     void TrackedMPC::interpolateTrajectory(double t, double& x, double& y, double& yaw) {
-        double s = path_length_*(3.0*std::pow(std::min(t/path_duration_, path_duration_), 2.0)-
-                2.0*std::pow(std::min(t/path_duration_, path_duration_), 3.0));
+        // double s = path_length_*(3.0*std::pow(std::min(t/path_duration_, path_duration_), 2.0)-
+        //         2.0*std::pow(std::min(t/path_duration_, path_duration_), 3.0));
+        double s = path_length_*(3.0*std::pow(std::min(t/path_duration_, 1.0), 2.0)-
+                2.0*std::pow(std::min(t/path_duration_, 1.0), 3.0));
 
         // x = spline1dcalc(path_sp_x_, s);
         // y = spline1dcalc(path_sp_y_, s);

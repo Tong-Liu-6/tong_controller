@@ -62,9 +62,7 @@ protected:
   int prediction_horizon_;
   double q_, r_, p_dist_;
   int max_infeasible_sol_;
-  double next_goal_threshold_;
-  bool use_tracking_controller_;
-  double path_sampling_threshold_;
+  int obstacle_threshold_;
   double MPC_frequency_, fblin_frequency_;
   double w_min_, w_max_, acc_lin_max_, wheel_radius_, track_width_;
 
@@ -93,7 +91,6 @@ protected:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 
   // Publishers for debugging purpose
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>> next_goal_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> reference_path_pub_;
 };
 
