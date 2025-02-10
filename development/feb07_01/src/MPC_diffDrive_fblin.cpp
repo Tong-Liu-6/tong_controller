@@ -194,18 +194,17 @@ bool MPC_diffDrive_fblin::executeMPCcontroller() {
 
     // Compute constraint matrices
     compute_constraintMatrix();
-    _solver->removeConstraint(constraintMatrix); // without this we can't modify the constraint dimension
     if (constraintMatrix.size()==0) {
         if (!_solver->addConstraint(_Ain_tot, _Bin_tot, constraintMatrix))
         {
-            errorMsg("[MPC_diffDrive_fblin.executeMPCcontroller] Error adding the constraint");
+            errorMsg("[MPC_diffDrive_fblin.executeMPCcontroller] Error setting the wheel velocity constraint");
             return false;
         }
     }
     else {
         if (!_solver->modifyConstraint(_Ain_tot, _Bin_tot, constraintMatrix))
         {
-            errorMsg("[MPC_diffDrive_fblin.executeMPCcontroller] Error modifying the constraint");
+            errorMsg("[MPC_diffDrive_fblin.executeMPCcontroller] Error setting the wheel velocity constraint");
             return false;
         }
     }
@@ -388,9 +387,8 @@ void MPC_diffDrive_fblin::compute_objectiveMatrix() {
 
 void MPC_diffDrive_fblin::compute_constraintMatrix() {
     // Initialize Ain_tot and Bin_tot matrices
-    int n_obstacle = obstacle_info.rows();
-    _Ain_tot = Eigen::MatrixXd::Zero(2*2*_N + 2*2*_N + n_obstacle*_N, 2*_N);
-    _Bin_tot = Eigen::VectorXd::Zero(2*2*_N + 2*2*_N + n_obstacle*_N);
+    _Ain_tot = Eigen::MatrixXd::Zero(2*2*_N + 2*2*_N + _N, 2*_N);
+    _Bin_tot = Eigen::VectorXd::Zero(2*2*_N + 2*2*_N + _N);
 
     // Compute velocity constraint matrices
     Eigen::MatrixXd _Ain_vel = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
@@ -412,9 +410,6 @@ void MPC_diffDrive_fblin::compute_constraintMatrix() {
     _Bin_vel(2*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
     _Bin_vel(4*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
     _Bin_vel(4*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
-
-    _Ain_tot.block(0, 0, 2*2*_N, 2*_N) = _Ain_vel;
-    _Bin_tot.segment(0, 2*2*_N) = _Bin_vel;
 
     // Compute acceleration constraint matrices
     Eigen::MatrixXd _Ain_acc = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
@@ -442,29 +437,29 @@ void MPC_diffDrive_fblin::compute_constraintMatrix() {
     _Ain_acc = A_var * V;
     _Bin_acc = d_V + A_var * v0;
 
-    _Ain_tot.block(2*2*_N, 0, 2*2*_N, 2*_N) = _Ain_acc;
-    _Bin_tot.segment(2*2*_N, 2*2*_N) = _Bin_acc;
-
     // Compute obstacle avoidance constraint matrices
-    for (auto k = 0; k < n_obstacle; k++) {
-        Eigen::MatrixXd _Ain_obs = Eigen::MatrixXd::Zero(_N, 2*_N);
-        Eigen::VectorXd _Bin_obs = Eigen::VectorXd::Zero(_N);
-        Eigen::MatrixXd Am_obs = Eigen::MatrixXd::Zero(_N, 2*(_N+1));
-        Eigen::VectorXd Bm_obs = Eigen::VectorXd::Zero(_N);
+    Eigen::MatrixXd _Ain_obs = Eigen::MatrixXd::Zero(_N, 2*_N);
+    Eigen::VectorXd _Bin_obs = Eigen::VectorXd::Zero(_N);
 
-        for (auto ii = 0; ii < _N; ii++) {
-            Am_obs(ii, 2*ii+2) = obstacle_info(k, 0);
-            Am_obs(ii, 2*ii+3) = obstacle_info(k, 1);
-            Bm_obs(ii) = obstacle_info(k, 2);
-        }
-        _Ain_obs = Am_obs*_Bcal;
-        _Bin_obs = Bm_obs - Am_obs*_Acal*Eigen::Vector2d(_actXP, _actYP);
+    Eigen::MatrixXd Am_obs = Eigen::MatrixXd::Zero(_N, 2*(_N+1));
+    Eigen::VectorXd Bm_obs = Eigen::VectorXd::Zero(_N);
 
-        _Ain_tot.block(2*2*_N + 2*2*_N + k*_N, 0, _N, 2*_N) = _Ain_obs;
-        _Bin_tot.segment(2*2*_N + 2*2*_N + k*_N, _N) = _Bin_obs;
-
+    for (auto k=0; k<_N; k++) {
+        Am_obs(k, 2*k+2) = A_obs_x;
+        Am_obs(k, 2*k+3) = A_obs_y;
+        Bm_obs(k) = B_obs;
     }
 
+    _Ain_obs = Am_obs*_Bcal;
+    _Bin_obs = Bm_obs - Am_obs*_Acal*Eigen::Vector2d(_actXP, _actYP);
+
+    // Assemble constraint matrices
+    _Ain_tot.block(0, 0, 2*2*_N, 2*_N) = _Ain_vel;
+    _Ain_tot.block(2*2*_N, 0, 2*2*_N, 2*_N) = _Ain_acc;
+    _Ain_tot.block(2*2*_N + 2*2*_N, 0, _N, 2*_N) = _Ain_obs;
+    _Bin_tot.segment(0, 2*2*_N) = _Bin_vel;
+    _Bin_tot.segment(2*2*_N, 2*2*_N) = _Bin_acc;
+    _Bin_tot.segment(2*2*_N + 2*2*_N, _N) = _Bin_obs;
 
     // Check matrix
 //    saveMatrixToFile("Ain_tot_matrix.csv", _Ain_tot);
@@ -518,6 +513,18 @@ void MPC_diffDrive_fblin::reset_pre_vP()
     pre_vPy = 0.0;
 }
 
-void MPC_diffDrive_fblin::set_obstacleConstraint(Eigen::MatrixXd obstacle_info_input) {
-    obstacle_info = obstacle_info_input;
+void MPC_diffDrive_fblin::set_obstacleConstraint(int obstacle_flag, double Ax, double Ay, double B) {
+    if (obstacle_flag == 0) {
+        A_obs_x = 1.0;
+        A_obs_y = 1.0; 
+        B_obs = +INFINITY;
+    } else if (obstacle_flag == 1) {
+        A_obs_x = Ax;
+        A_obs_y = Ay; 
+        B_obs = B;
+    } else if (obstacle_flag == -1){
+        A_obs_x = -Ax;
+        A_obs_y = -Ay; 
+        B_obs = -B;
+    }
 }

@@ -146,7 +146,8 @@ public:
     void set_DebugMsgCallback(DebugMsgCallback callback);
 
     void reset_pre_vP();
-    void set_obstacleConstraint(Eigen::MatrixXd obstacle_info_input);
+    void set_obstacleConstraint(int obstacle_flag, double Ax, double Ay, double B);
+    void getMPCPrediction(Eigen::VectorXd &previous_prediction);
 
 private:
     // MPC parameters
@@ -165,7 +166,6 @@ private:
     Eigen::VectorXd _f;
     Eigen::MatrixXd _Ain_tot;
     Eigen::VectorXd _Bin_tot;
-    Eigen::MatrixXd obstacle_info;
 
     double _actXP, _actYP, _actX, _actY, _actYaw;
     Eigen::VectorXd _predictRobotState, _refMPCstate, _optimVect;
