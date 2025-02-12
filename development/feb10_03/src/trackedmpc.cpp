@@ -85,20 +85,6 @@ namespace tong_controller {
         if (false == node->get_parameter(plugin_name_ + ".obstacle_avoidance_range", obstacle_avoidance_range))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "obstacle_avoidance_range");
 
-        declare_parameter_if_not_declared(node, plugin_name_ + ".search_step", rclcpp::ParameterValue(0.05));
-        if (false == node->get_parameter(plugin_name_ + ".search_step", search_step))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "search_step");
-
-        
-        declare_parameter_if_not_declared(node, plugin_name_ + ".virtual_laser_range", rclcpp::ParameterValue(90.0));
-        if (false == node->get_parameter(plugin_name_ + ".virtual_laser_range", virtual_laser_range))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "virtual_laser_range");
-
-
-        declare_parameter_if_not_declared(node, plugin_name_ + ".virtual_laser_interval", rclcpp::ParameterValue(30.0));
-        if (false == node->get_parameter(plugin_name_ + ".virtual_laser_interval", virtual_laser_interval))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "virtual_laser_interval");
-
         declare_parameter_if_not_declared(node, plugin_name_ + ".w_min", rclcpp::ParameterValue(-0.1));
         if (false == node->get_parameter(plugin_name_ + ".w_min", w_min_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "w_min");
@@ -190,15 +176,15 @@ namespace tong_controller {
     }
 
     const std::vector<std::pair<int, int>> neighborSets = {
-            {-1, -1},
-            { 0, -1},
-            { 1, -1},
-            { 1,  0},
-            { 1,  1},
-            { 0,  1},
-            {-1,  1},
-            {-1,  0}
-        };
+        {-1, -1},
+        { 0, -1},
+        { 1, -1},
+        { 1,  0},
+        { 1,  1},
+        { 0,  1},
+        {-1,  1},
+        {-1,  0}
+    };
     geometry_msgs::msg::TwistStamped TrackedMPC::computeVelocityCommands(const geometry_msgs::msg::PoseStamped &pose,
             const geometry_msgs::msg::Twist& /*speed*/, nav2_core::GoalChecker* /*goal_checker*/) {
 
@@ -240,58 +226,14 @@ namespace tong_controller {
                     referenceRobotState(3 * k + 2) = yaw;
                 }
 
-                // modify reference robot state
-                for (int k = 0; k < prediction_horizon_ + 1; k++) {
-                    unsigned int state_xm, state_ym;
-                    double state_xw = referenceRobotState(3 * k);
-                    double state_yw = referenceRobotState(3 * k + 1);
-                    costmap->worldToMap(state_xw, state_yw, state_xm, state_ym);
-                    int state_cost = static_cast<int>(costmap->getCost(state_xm, state_ym));
-                    if (state_cost >= obstacle_threshold_) {
-                        double search_angle = referenceRobotState(3 * k + 1) + M_PI/2;
-                        for (int ii = 1; ii < 10; ii++) {
-                            unsigned int search_xm, search_ym;
-                            double search_xw = state_xw + search_step * ii * cos(search_angle);
-                            double search_yw = state_yw + search_step * ii * sin(search_angle);
-                            costmap->worldToMap(search_xw, search_yw, search_xm, search_ym);
-                            int search_cost = static_cast<int>(costmap->getCost(search_xm, search_ym));
-                            if (search_cost < obstacle_threshold_) {
-                                referenceRobotState(3 * k) = search_xw; 
-                                referenceRobotState(3 * k + 1) = search_yw; 
-                                break;
-                            }
-
-                            search_xw = state_xw - search_step * ii * cos(search_angle);
-                            search_yw = state_yw - search_step * ii * sin(search_angle);
-                            costmap->worldToMap(search_xw, search_yw, search_xm, search_ym);
-                            search_cost = static_cast<int>(costmap->getCost(search_xm, search_ym));
-                            if (search_cost < obstacle_threshold_) {
-                                referenceRobotState(3 * k) = search_xw; 
-                                referenceRobotState(3 * k + 1) = search_yw; 
-                                break;
-                            }
-                        }
-                        if (k >= 1) {
-                            referenceRobotState(3 * (k-1) + 2) = atan2(referenceRobotState(3 * k + 1) - referenceRobotState(3 * (k-1) + 1), 
-                                                                referenceRobotState(3 * k) - referenceRobotState(3 * (k-1)));
-                        }
-                    }
-                }
 
 
-
-
-
-
-
-                // Compute obstacle avoidcance constraint
-                // obstacle matrix
+                // Compute Obstacle Avoidcance Constraint
                 unsigned int center_x, center_y;
                 double P_x, P_y; 
                 P_x = pose.pose.position.x + p_dist_ * cos(tf2::getYaw(pose.pose.orientation));
                 P_y = pose.pose.position.y + p_dist_ * sin(tf2::getYaw(pose.pose.orientation));
                 costmap->worldToMap(P_x, P_y, center_x, center_y);
-                // costmap->worldToMap(pose.pose.position.x, pose.pose.position.y, center_x, center_y);
                 int map_range = 2 * obstacle_avoidance_range + 1;
                 int map_center = obstacle_avoidance_range;
 
@@ -306,220 +248,145 @@ namespace tong_controller {
                 }
 
                 Eigen::MatrixXd visited_map = Eigen::MatrixXd::Constant(map_range, map_range, -1.0);
+                std::vector<int> record_dist(0);
+                std::vector<std::pair<int, int>> record_position(0);
                 int current_regionID = 0;
                 for (int ii = 0; ii < map_range; ii++) {
                     for (int jj = 0; jj < map_range; jj++) {
-                        if (visited_map(ii, jj) == -1.0 && obstacle_map(ii, jj) == 1.0) {
-                            searchMap(ii, jj, current_regionID, obstacle_map, visited_map);
+                        if (visited_map(ii, jj) < 0 && obstacle_map(ii, jj) == 1.0) {
+                            record_dist.push_back(map_range * map_range);
+                            record_position.push_back({-1, -1}); 
+                            searchMap(ii, jj, current_regionID, obstacle_map, visited_map, record_dist, record_position);
                             current_regionID++;
                         }
                     }
                 }
 
-// RCLCPP_INFO(logger_, "MARK_LOOP_START");
-                // virtual laser search
-                int n_side = static_cast<int>(virtual_laser_range / virtual_laser_interval); 
-                int n_scan = n_side * 2 + 1; 
-                std::vector<double> virtual_laser(n_scan); 
-                virtual_laser.at(n_side) = 0.0; 
-                for (int ii = 1; ii < n_side + 1; ii++) {
-                    virtual_laser.at(n_side - ii) = static_cast<double>(virtual_laser_interval * ii) * M_PI/180;
-                    virtual_laser.at(n_side + ii) = -static_cast<double>(virtual_laser_interval * ii) * M_PI/180;
-                }
-// RCLCPP_INFO(logger_, "MARK_LOOP_END");
-
-                std::vector<std::vector<std::pair<int, int>>> scan_result(0);
-                for (int ii = 0; ii < n_scan; ii++) {
-                    double scan_direction = tf2::getYaw(pose.pose.orientation) + virtual_laser.at(ii);
-                    // RCLCPP_INFO(logger_, "Check(%d): %f", ii, scan_direction);
-                    
-                    int current_x = map_center; 
-                    int current_y = map_center; 
-                    int current_length = 1;
-                    do {
-                        current_x = current_x + static_cast<int>(cos(scan_direction) * current_length);
-                        current_y = current_y + static_cast<int>(sin(scan_direction) * current_length);
-                        current_length++;
-
-                        if (visited_map(current_x, current_y) >= 0.0 
-                        && current_x >= 0 && current_x < map_range && current_y >= 0 && current_y < map_range) {
-                            int scan_result_rows = static_cast<int>(visited_map(current_x, current_y));
-                            while (static_cast<int>(scan_result.size()) <= scan_result_rows) {
-                                std::vector<std::pair<int, int>> new_row(0);
-                                scan_result.push_back(new_row);
-                            }
-                            scan_result.at(scan_result_rows).push_back({current_x, current_y});
-                            break;
-                        }
-                    } while (current_x >= 0 && current_x < map_range && current_y >= 0 && current_y < map_range);
-                }
-
-                std::vector<std::vector<double>> obstacle_info(0);
-
-                // for (auto ii = 0; ii < scan_result.size(); ii++) {
-                //     for (auto k = 1; k < scan_result.at(ii).size(); k++) {
-                //         int point1x = scan_result.at(ii).at(k).first;
-                //         int point1y = scan_result.at(ii).at(k).second;
-                //         int point2x = scan_result.at(ii).at(k-1).first;
-                //         int point2y = scan_result.at(ii).at(k-1).second;
-                //         if (point1x != point2x || point1y != point2y) {
-                //             double Ax = 0.0, Ay = 0.0, B = 0.0;
-                //             double obstacle_x, obstacle_y;
-                //             int imx = static_cast<int>(center_x) + (point1x - map_center);
-                //             int imy = static_cast<int>(center_y) + (point1y - map_center);
-                //             costmap->mapToWorld(imx, imy, obstacle_x, obstacle_y);
-
-                //             Ax = point2y - point1y; 
-                //             Ay = point1x - point2x;
-                //             B = Ax * obstacle_x + Ay * obstacle_y;
-                //             // if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) {
-                //             // // if (Ax * P_x + Ay * P_y > B) {
-                //             //     Ax = -Ax;
-                //             //     Ay = -Ay;
-                //             //     B = -B;
-                //             // }
-
-                //             double slope_angle = atan2(point1y - point2y, point1x - point2x) + M_PI/2;
-                //             int mark_xm = imx + static_cast<int>(1.5 * cos(slope_angle));
-                //             int mark_ym = imy + static_cast<int>(1.5 * sin(slope_angle));
-                //             double mark_xw, mark_yw;
-                //             costmap->mapToWorld(mark_xm, mark_ym, mark_xw, mark_yw);
-                //             int mark_cost = static_cast<int>(costmap->getCost(mark_xm, mark_ym));
-                //             if ((Ax * mark_xw + Ay * mark_yw > B && mark_cost < obstacle_threshold_) || 
-                //                 (Ax * mark_xw + Ay * mark_yw <= B && mark_cost >= obstacle_threshold_)) {
-                //                 Ax = -Ax;
-                //                 Ay = -Ay;
-                //                 B = -B;
-                //             } 
-
-                //             obstacle_info.push_back({Ax, Ay, B});
-                //             RCLCPP_INFO(logger_, "Check(%d): Ax = %f, Ay = %f, B = %f", static_cast<int>(obstacle_info.size()), Ax, Ay, B);
-                //         }
-                //     }
-                // }
-
-                for (auto ii = 0; ii < scan_result.size(); ii++) {
-                    for (auto k = 0; k < scan_result.at(ii).size(); k++) {
-                        int imx = static_cast<int>(center_x) + (scan_result.at(ii).at(k).first - map_center);
-                        int imy = static_cast<int>(center_y) + (scan_result.at(ii).at(k).second - map_center);
-                        std::vector<unsigned int> neighborSetsCost(8);
-                        for (int jj = 0; jj < 8; jj++) {
-                            int nx1 = imx + neighborSets[jj].first;
-                            int ny1 = imy + neighborSets[jj].second;
-                            unsigned char cost1 = costmap->getCost(nx1, ny1);
-                            neighborSetsCost[jj] = static_cast<int>(cost1);
-                        }
-                        int count = 0;
-                        std::vector<int> neighborSetsIndex(2, 0);
-                        for (int jj = 0; jj < 8; jj++) {
-                            if (neighborSetsCost[jj] >= obstacle_threshold_) {
-                                int jj1 = (jj + 7) % 8;
-                                int jj2 = (jj + 1) % 8;
-                                if (neighborSetsCost[jj1] < obstacle_threshold_ || neighborSetsCost[jj2] < obstacle_threshold_) {
-                                    neighborSetsIndex[count] = jj;
-                                    count++;
-                                }
-                            }
-                        }
-                        double Ax = 0.0, Ay = 0.0, B = 0.0;
-                        double obstacle_x, obstacle_y;
-                        costmap->mapToWorld(imx, imy, obstacle_x, obstacle_y);
-                        if (count == 2) {
-                            Ax = neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second;
-                            Ay = neighborSets[neighborSetsIndex[1]].first - neighborSets[neighborSetsIndex[0]].first;
-                            B = Ax * obstacle_x + Ay * obstacle_y;
-
-                            // if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) {
-                            // // if (Ax * P_x + Ay * P_y > B) {
-                            //     Ax = -Ax;
-                            //     Ay = -Ay;
-                            //     B = -B;
-                            // }
-
-                            double slope_angle = atan2(neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second, 
-                                                neighborSets[neighborSetsIndex[0]].first - neighborSets[neighborSetsIndex[1]].first) + M_PI/2;
-                            int mark_xm = imx + static_cast<int>(1.5 * cos(slope_angle));
-                            int mark_ym = imy + static_cast<int>(1.5 * sin(slope_angle));
-                            double mark_xw, mark_yw;
-                            costmap->mapToWorld(mark_xm, mark_ym, mark_xw, mark_yw);
-                            int mark_cost = static_cast<int>(costmap->getCost(mark_xm, mark_ym));
-                            if ((Ax * mark_xw + Ay * mark_yw > B && mark_cost < obstacle_threshold_) || 
-                                 (Ax * mark_xw + Ay * mark_yw <= B && mark_cost >= obstacle_threshold_)) {
-                                Ax = -Ax;
-                                Ay = -Ay;
-                                B = -B;
-                            } 
-
-
-                            obstacle_info.push_back({Ax, Ay, B});
-                        } 
-                        
-                        
+                int n_obstacle = record_position.size();
+                Eigen::MatrixXd obstacle_info;
+                obstacle_info.resize(n_obstacle, 3);
+                for (int ii = 0; ii < n_obstacle; ii++) {
+                    int imx = static_cast<int>(center_x) + (record_position.at(ii).first - map_center);
+                    int imy = static_cast<int>(center_y) + (record_position.at(ii).second - map_center);
+                    std::vector<unsigned int> neighborSetsCost(8);
+                    for (int jj = 0; jj < 8; jj++) {
+                        int nx1 = imx + neighborSets[jj].first;
+                        int ny1 = imy + neighborSets[jj].second;
+                        unsigned char cost1 = costmap->getCost(nx1, ny1);
+                        neighborSetsCost[jj] = static_cast<int>(cost1);
                     }
+                    int count = 0;
+                    std::vector<int> neighborSetsIndex(2, 0);
+                    for (int jj = 0; jj < 8; jj++) {
+                        if (neighborSetsCost[jj] >= obstacle_threshold_) {
+                            int jj1 = (jj + 7) % 8;
+                            int jj2 = (jj + 1) % 8;
+                            if (neighborSetsCost[jj1] < obstacle_threshold_ || neighborSetsCost[jj2] < obstacle_threshold_) {
+                                neighborSetsIndex[count] = jj;
+                                count++;
+                            }
+                        }
+                    }
+                    double Ax = 0.0, Ay = 0.0, B = 0.0;
+                    double obstacle_x, obstacle_y;
+                    costmap->mapToWorld(imx, imy, obstacle_x, obstacle_y);
+                    if (count == 2) {
+                        Ax = neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second;
+                        Ay = neighborSets[neighborSetsIndex[1]].first - neighborSets[neighborSetsIndex[0]].first;
+                        B = Ax * obstacle_x + Ay * obstacle_y;
+                    } else if (count == 1) {
+                        Ax = neighborSets[neighborSetsIndex[0]].second - 0;
+                        Ay = 0 - neighborSets[neighborSetsIndex[0]].first;
+                        B = Ax * obstacle_x + Ay * obstacle_y;
+                    } else {
+                        // Ax = imx - static_cast<int>(center_x); 
+                        // Ay = imy - static_cast<int>(center_y); 
+                        // B = Ax * obstacle_x + Ay * obstacle_y;
+                        Ax = 0.0;
+                        Ay = 0.0;
+                        B = +INFINITY;
+                    }
+                    if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) {
+                        Ax = -Ax;
+                        Ay = -Ay;
+                        B = -B;
+                    }
+                    obstacle_info(ii, 0) = Ax;
+                    obstacle_info(ii, 1) = Ay;
+                    obstacle_info(ii, 2) = B;
                 }
 
-                // for (int i = 0; i < obstacle_info.size(); i++) {
-                //     RCLCPP_INFO(logger_, "OBSTACLE INFO: %d, %f, %f, %f, %d, %d", static_cast<int>(obstacle_info.size()), obstacle_info.at(i).at(0), obstacle_info.at(i).at(1), obstacle_info.at(i).at(2));
+                // for (int i = 0; i < obstacle_info.rows(); i++) {
+                //     RCLCPP_ERROR(logger_, "OBSTACLE INFO: %d, %f, %f, %f, %d, %d", static_cast<int>(obstacle_info.rows()), obstacle_info(i, 0), obstacle_info(i, 1), obstacle_info(i, 2), record_position[i].first, record_position[i].second);
                 // }
+                
+
                 MPCcontroller->set_obstacleConstraint(obstacle_info);
 
-
-
-                // int n_obstacle = record_position.size();
-                // Eigen::MatrixXd obstacle_info;
-                // obstacle_info.resize(n_obstacle, 3);
-                // for (int ii = 0; ii < n_obstacle; ii++) {
-                //     int imx = static_cast<int>(center_x) + (record_position.at(ii).first - map_center);
-                //     int imy = static_cast<int>(center_y) + (record_position.at(ii).second - map_center);
+                // int obstacle_flag = 0, obstacle_index = -1;
+                // double obstacle_x, obstacle_y;
+                // double Ax = 0.0, Ay = 0.0, B = 0.0;
+                // unsigned int mx, my;
+                // for (int k = 0; k < prediction_horizon_ + 1; k++) {
+                //     double wx = previous_prediction(2*k); 
+                //     double wy = previous_prediction(2*k+1);
+                //     costmap->worldToMap(wx, wy, mx, my);  
+                //     unsigned char cost = costmap->getCost(mx, my);
+                //     if (static_cast<unsigned int>(cost) >= obstacle_threshold_) {
+                //         obstacle_flag = 1;
+                //         obstacle_index = k;
+                //         obstacle_x = wx; 
+                //         obstacle_y = wy;
+                //         break;
+                //     }
+                // }
+                // if (obstacle_flag == 0) {
+                //     MPCcontroller->set_obstacleConstraint(obstacle_flag, Ax, Ay, B);
+                // } else {
+                //     int imx = static_cast<int>(mx);
+                //     int imy = static_cast<int>(my);
+                //     std::vector<std::pair<int, int>> neighborSets = {
+                //         {-1, -1},
+                //         { 0, -1},
+                //         { 1, -1},
+                //         { 1,  0},
+                //         { 1,  1},
+                //         { 0,  1},
+                //         {-1,  1},
+                //         {-1,  0}
+                //     };
                 //     std::vector<unsigned int> neighborSetsCost(8);
-                //     for (int jj = 0; jj < 8; jj++) {
-                //         int nx1 = imx + neighborSets[jj].first;
-                //         int ny1 = imy + neighborSets[jj].second;
+                //     for (int ii = 0; ii < 8; ii++) {
+                //         int nx1 = imx + neighborSets[ii].first;
+                //         int ny1 = imy + neighborSets[ii].second;
                 //         unsigned char cost1 = costmap->getCost(nx1, ny1);
-                //         neighborSetsCost[jj] = static_cast<int>(cost1);
+                //         neighborSetsCost[ii] = static_cast<unsigned int>(cost1);
                 //     }
                 //     int count = 0;
                 //     std::vector<int> neighborSetsIndex(2, 0);
-                //     for (int jj = 0; jj < 8; jj++) {
-                //         if (neighborSetsCost[jj] >= obstacle_threshold_) {
-                //             int jj1 = (jj + 7) % 8;
-                //             int jj2 = (jj + 1) % 8;
+                //     for (int ii = 0; ii < 8; ii++) {
+                //         if (neighborSetsCost[ii] >= obstacle_threshold_) {
+                //             int jj1 = (ii + 7) % 8;
+                //             int jj2 = (ii + 1) % 8;
                 //             if (neighborSetsCost[jj1] < obstacle_threshold_ || neighborSetsCost[jj2] < obstacle_threshold_) {
-                //                 neighborSetsIndex[count] = jj;
+                //                 neighborSetsIndex[count] = ii;
                 //                 count++;
                 //             }
                 //         }
                 //     }
-                //     double Ax = 0.0, Ay = 0.0, B = 0.0;
-                //     double obstacle_x, obstacle_y;
-                //     costmap->mapToWorld(imx, imy, obstacle_x, obstacle_y);
-                //     if (count == 2) {
-                //         Ax = neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second;
-                //         Ay = neighborSets[neighborSetsIndex[1]].first - neighborSets[neighborSetsIndex[0]].first;
-                //         B = Ax * obstacle_x + Ay * obstacle_y;
-                //     } else if (count == 1) {
-                //         Ax = neighborSets[neighborSetsIndex[0]].second - 0;
-                //         Ay = 0 - neighborSets[neighborSetsIndex[0]].first;
-                //         B = Ax * obstacle_x + Ay * obstacle_y;
-                //     } else {
-                //         // Ax = imx - static_cast<int>(center_x); 
-                //         // Ay = imy - static_cast<int>(center_y); 
-                //         // B = Ax * obstacle_x + Ay * obstacle_y;
-                //         Ax = 0.0;
-                //         Ay = 0.0;
-                //         B = +INFINITY;
-                //     }
-                //     if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) {
-                //         Ax = -Ax;
-                //         Ay = -Ay;
-                //         B = -B;
-                //     }
-                //     obstacle_info(ii, 0) = Ax;
-                //     obstacle_info(ii, 1) = Ay;
-                //     obstacle_info(ii, 2) = B;
+                //     Ax = neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second;
+                //     Ay = neighborSets[neighborSetsIndex[1]].first - neighborSets[neighborSetsIndex[0]].first;
+                //     B = Ax * obstacle_x + Ay * obstacle_y;
+                //     if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) obstacle_flag = -1;
+
+                //     // keep previous constraints if count != 2
+                //     if (count == 2) MPCcontroller->set_obstacleConstraint(obstacle_flag, Ax, Ay, B);
+                    
                 // }
 
-            
+
+
+
 
 
                 // Update the path time
@@ -699,12 +566,6 @@ namespace tong_controller {
                     wheel_radius_ = parameter.as_double();
                 } else if (name == plugin_name_ + ".track_width") {
                     track_width_ = parameter.as_double();
-                } else if (name == plugin_name_ + ".virtual_laser_range") {
-                    virtual_laser_range = parameter.as_double();
-                } else if (name == plugin_name_ + ".virtual_laser_interval") {
-                    virtual_laser_interval = parameter.as_double();
-                } else if (name == plugin_name_ + ".search_step") {
-                    search_step = parameter.as_double();
                 }
             } else if (type == ParameterType::PARAMETER_INTEGER) {
                 if (name == plugin_name_ + ".prediction_horizon") {
@@ -714,7 +575,7 @@ namespace tong_controller {
                 } else if (name == plugin_name_ + ".obstacle_threshold") {
                     obstacle_threshold_ = parameter.as_int();
                 } else if (name == plugin_name_ + ".obstacle_avoidance_range") {
-                    obstacle_avoidance_range = parameter.as_int();
+                    obstacle_threshold_ = parameter.as_int();
                 }
             }
         }
@@ -741,18 +602,25 @@ namespace tong_controller {
 
     const int dx[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
     const int dy[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
-    void TrackedMPC::searchMap(int i, int j, int regionID, const Eigen::MatrixXd &obstacle_map, Eigen::MatrixXd &visited_map) {
+    void TrackedMPC::searchMap(int i, int j, int regionID, const Eigen::MatrixXd &obstacle_map, Eigen::MatrixXd &visited_map, 
+                            std::vector<int> &record_dist, std::vector<std::pair<int, int>> &record_position) {
         int rows = obstacle_map.rows();
         int cols = obstacle_map.cols();
         if (i < 0 || i >= rows || j < 0 || j >= cols) return;
-        if (visited_map(i, j) >= 0.0 || obstacle_map(i, j) == 0) return;
+        if (visited_map(i, j) >= 0 || obstacle_map(i, j) == 0) return;
 
-        visited_map(i, j) = regionID;
+        int dist_center = (i - obstacle_avoidance_range) * (i - obstacle_avoidance_range) + (j - obstacle_avoidance_range) * (j - obstacle_avoidance_range);
+        visited_map(i, j) = dist_center;
+        if (dist_center < record_dist.at(regionID)) {
+            record_dist.at(regionID) = dist_center;
+            record_position.at(regionID).first = i;
+            record_position.at(regionID).second = j;
+        }
 
         for (int k = 0; k < 8; k++) {
             int new_i = i + dx[k];
             int new_j = j + dy[k];
-            searchMap(new_i, new_j, regionID, obstacle_map, visited_map);
+            searchMap(new_i, new_j, regionID, obstacle_map, visited_map, record_dist, record_position);
         }
     }
 

@@ -3,7 +3,6 @@
 #include <cmath>
 #include <fstream>
 #include <unsupported/Eigen/MatrixFunctions>
-#include <sstream>
 
 MPC_diffDrive_fblin::MPC_diffDrive_fblin() {
     // Initialize class variables
@@ -389,7 +388,7 @@ void MPC_diffDrive_fblin::compute_objectiveMatrix() {
 
 void MPC_diffDrive_fblin::compute_constraintMatrix() {
     // Initialize Ain_tot and Bin_tot matrices
-    int n_obstacle = obstacle_info.size();
+    int n_obstacle = obstacle_info.rows();
     _Ain_tot = Eigen::MatrixXd::Zero(2*2*_N + 2*2*_N + n_obstacle*_N, 2*_N);
     _Bin_tot = Eigen::VectorXd::Zero(2*2*_N + 2*2*_N + n_obstacle*_N);
 
@@ -409,10 +408,10 @@ void MPC_diffDrive_fblin::compute_constraintMatrix() {
         _Bin_vel(2*(k+_N)) = -_wheelVelMin*2.0*_wheelRadius;
         _Bin_vel(2*(k+_N)+1) = -_wheelVelMin*2.0*_wheelRadius;
     }
-    // _Bin_vel(2*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
-    // _Bin_vel(2*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
-    // _Bin_vel(4*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
-    // _Bin_vel(4*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    _Bin_vel(2*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    _Bin_vel(2*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    _Bin_vel(4*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    _Bin_vel(4*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
 
     _Ain_tot.block(0, 0, 2*2*_N, 2*_N) = _Ain_vel;
     _Bin_tot.segment(0, 2*2*_N) = _Bin_vel;
@@ -454,16 +453,10 @@ void MPC_diffDrive_fblin::compute_constraintMatrix() {
         Eigen::VectorXd Bm_obs = Eigen::VectorXd::Zero(_N);
 
         for (auto ii = 0; ii < _N; ii++) {
-            Am_obs(ii, 2*ii+2) = obstacle_info.at(k).at(0);
-            Am_obs(ii, 2*ii+3) = obstacle_info.at(k).at(1);
-            Bm_obs(ii) = obstacle_info.at(k).at(2);
+            Am_obs(ii, 2*ii+2) = obstacle_info(k, 0);
+            Am_obs(ii, 2*ii+3) = obstacle_info(k, 1);
+            Bm_obs(ii) = obstacle_info(k, 2);
         }
-        // std::ostringstream oss;
-        // oss << "[MPC_diffDrive_fblin.set_referenceRobotState] No." << static_cast<int>(k)
-        //     << ", Ax=" << obstacle_info.at(k).at(0)
-        //     << ", Ay=" << obstacle_info.at(k).at(1)
-        //     << ", B=" << obstacle_info.at(k).at(2);
-        // infoMsg(oss.str());
         _Ain_obs = Am_obs*_Bcal;
         _Bin_obs = Bm_obs - Am_obs*_Acal*Eigen::Vector2d(_actXP, _actYP);
 
@@ -525,6 +518,6 @@ void MPC_diffDrive_fblin::reset_pre_vP()
     pre_vPy = 0.0;
 }
 
-void MPC_diffDrive_fblin::set_obstacleConstraint(std::vector<std::vector<double>> obstacle_info_input) {
+void MPC_diffDrive_fblin::set_obstacleConstraint(Eigen::MatrixXd obstacle_info_input) {
     obstacle_info = obstacle_info_input;
 }

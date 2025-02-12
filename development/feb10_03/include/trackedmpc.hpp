@@ -50,7 +50,8 @@ protected:
   rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
 
   void interpolateTrajectory(double t, double& x, double& y, double& yaw);
-  void searchMap(int i, int j, int regionID, const Eigen::MatrixXd &obstacle_map, Eigen::MatrixXd &visited_map);
+  void searchMap(int i, int j, int regionID, const Eigen::MatrixXd &obstacle_map, Eigen::MatrixXd &visited_map, 
+                            std::vector<int> &record_dist, std::vector<std::pair<int, int>> &record_position);
 
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
@@ -68,7 +69,6 @@ protected:
   double MPC_frequency_, fblin_frequency_;
   double w_min_, w_max_, acc_lin_max_, wheel_radius_, track_width_;
   int obstacle_avoidance_range;
-  double virtual_laser_interval, virtual_laser_range, search_step;
   
 
   // Controller internal parameters
