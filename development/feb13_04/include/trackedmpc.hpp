@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+// #include <interpolation.h>
 #include <gsl/gsl_spline.h>
 #include <Eigen/Dense>
 
@@ -49,6 +50,7 @@ protected:
   rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
 
   void interpolateTrajectory(double t, double& x, double& y, double& yaw);
+  void searchMap(int i, int j, int regionID, const Eigen::MatrixXd &obstacle_map, Eigen::MatrixXd &visited_map);
 
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
@@ -75,10 +77,8 @@ protected:
 
   MPC_diffDrive_fblin* MPCcontroller;
 
-  geometry_msgs::msg::PoseStamped goal_pose;
-  double goal_tolerance_, kp_rot_;
-
   double path_duration_, path_length_;
+  // alglib::spline1dinterpolant path_sp_x_, path_sp_y_, path_sp_yaw_;
   gsl_spline *cspline_x = nullptr; 
   gsl_spline *cspline_y = nullptr;
   gsl_spline *cspline_yaw = nullptr;  
@@ -87,7 +87,7 @@ protected:
   gsl_interp_accel *acc_yaw = nullptr; 
 
   std::vector<double> path_x_, path_y_, path_yaw_;
-  long unsigned int path_time_;
+  long unsigned int path_idx_, path_time_;
 
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>  collision_checker_;
 

@@ -88,10 +88,12 @@ namespace tong_controller {
         declare_parameter_if_not_declared(node, plugin_name_ + ".search_step", rclcpp::ParameterValue(0.05));
         if (false == node->get_parameter(plugin_name_ + ".search_step", search_step))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "search_step");
+
         
         declare_parameter_if_not_declared(node, plugin_name_ + ".virtual_laser_range", rclcpp::ParameterValue(90.0));
         if (false == node->get_parameter(plugin_name_ + ".virtual_laser_range", virtual_laser_range))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "virtual_laser_range");
+
 
         declare_parameter_if_not_declared(node, plugin_name_ + ".virtual_laser_interval", rclcpp::ParameterValue(30.0));
         if (false == node->get_parameter(plugin_name_ + ".virtual_laser_interval", virtual_laser_interval))
@@ -116,14 +118,6 @@ namespace tong_controller {
         declare_parameter_if_not_declared(node, plugin_name_ + ".track_width", rclcpp::ParameterValue(0.5));
         if (false == node->get_parameter(plugin_name_ + ".track_width", track_width_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "track_width");
-
-        declare_parameter_if_not_declared(node, plugin_name_ + ".goal_tolerance", rclcpp::ParameterValue(0.1));
-        if (false == node->get_parameter(plugin_name_ + ".goal_tolerance", goal_tolerance_))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "goal_tolerance");
-
-        declare_parameter_if_not_declared(node, plugin_name_ + ".kp_rot", rclcpp::ParameterValue(1.0));
-        if (false == node->get_parameter(plugin_name_ + ".kp_rot", kp_rot_))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "kp_rot");
 
         // Check parameter consistency
         if (std::fmod(fblin_frequency_, MPC_frequency_)!=0.0) {
@@ -158,7 +152,7 @@ namespace tong_controller {
         }
 
         path_duration_ = path_length_ = 0.0;
-        path_time_ = 0;
+        path_idx_ = path_time_ = 0;
     }
 
     void TrackedMPC::cleanup() {
@@ -213,21 +207,12 @@ namespace tong_controller {
         nav2_costmap_2d::Costmap2D *costmap = costmap_ros_->getCostmap();
         std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
 
-        geometry_msgs::msg::TwistStamped cmd_vel;
-        cmd_vel.header = pose.header;
-
-        // control orientation at goal
-        double goal_dist = nav2_util::geometry_utils::euclidean_distance(pose.pose.position, goal_pose.pose.position);
-        if (goal_dist < goal_tolerance_) {
-            cmd_vel.twist.linear.x = 0.0;
-            double d_theta = tf2::getYaw(goal_pose.pose.orientation) - tf2::getYaw(pose.pose.orientation);
-            while (d_theta > M_PI) d_theta -= 2 * M_PI; 
-            while (d_theta < -M_PI) d_theta += 2 * M_PI; 
-            double angular_vel = kp_rot_ * d_theta;
-            double max_vel_angular_ = (w_max_-w_min_)/track_width_*wheel_radius_;
-            cmd_vel.twist.angular.z = std::max(-max_vel_angular_, std::min(angular_vel, max_vel_angular_));
-            return cmd_vel;
-            }
+        // RCLCPP_INFO(logger_, "Costmap name: %s", costmap_ros_->getName().c_str());
+        // unsigned int mx, my;
+        // double wx = pose.pose.position.x, wy = pose.pose.position.y;  
+        // costmap->worldToMap(wx, wy, mx, my);  
+        // unsigned char cost = costmap->getCost(mx, my); 
+        // RCLCPP_INFO(logger_, "Cost: %u", static_cast<unsigned int>(cost));
 
         // Update controller state
         MPCcontroller->set_actualRobotState(pose.pose.position.x, pose.pose.position.y, tf2::getYaw(pose.pose.orientation));
@@ -255,7 +240,7 @@ namespace tong_controller {
                     referenceRobotState(3 * k + 2) = yaw;
                 }
 
-                // modify reference robot state (avoid deadlock)
+                // modify reference robot state
                 for (int k = 0; k < prediction_horizon_ + 1; k++) {
                     unsigned int state_xm, state_ym;
                     double state_xw = referenceRobotState(3 * k);
@@ -293,6 +278,12 @@ namespace tong_controller {
                     }
                 }
 
+
+
+
+
+
+
                 // Compute obstacle avoidcance constraint
                 // obstacle matrix
                 unsigned int center_x, center_y;
@@ -300,6 +291,7 @@ namespace tong_controller {
                 P_x = pose.pose.position.x + p_dist_ * cos(tf2::getYaw(pose.pose.orientation));
                 P_y = pose.pose.position.y + p_dist_ * sin(tf2::getYaw(pose.pose.orientation));
                 costmap->worldToMap(P_x, P_y, center_x, center_y);
+                // costmap->worldToMap(pose.pose.position.x, pose.pose.position.y, center_x, center_y);
                 int map_range = 2 * obstacle_avoidance_range + 1;
                 int map_center = obstacle_avoidance_range;
 
@@ -313,7 +305,18 @@ namespace tong_controller {
                     }
                 }
 
-// RCLCPP_INFO(logger_, "MARK_LOOP_START");  // for debug only
+                Eigen::MatrixXd visited_map = Eigen::MatrixXd::Constant(map_range, map_range, -1.0);
+                int current_regionID = 0;
+                for (int ii = 0; ii < map_range; ii++) {
+                    for (int jj = 0; jj < map_range; jj++) {
+                        if (visited_map(ii, jj) == -1.0 && obstacle_map(ii, jj) == 1.0) {
+                            searchMap(ii, jj, current_regionID, obstacle_map, visited_map);
+                            current_regionID++;
+                        }
+                    }
+                }
+
+// RCLCPP_INFO(logger_, "MARK_LOOP_START");
                 // virtual laser search
                 int n_side = static_cast<int>(virtual_laser_range / virtual_laser_interval); 
                 int n_scan = n_side * 2 + 1; 
@@ -323,11 +326,12 @@ namespace tong_controller {
                     virtual_laser.at(n_side - ii) = static_cast<double>(virtual_laser_interval * ii) * M_PI/180;
                     virtual_laser.at(n_side + ii) = -static_cast<double>(virtual_laser_interval * ii) * M_PI/180;
                 }
-// RCLCPP_INFO(logger_, "MARK_LOOP_END");  // for debug only
+// RCLCPP_INFO(logger_, "MARK_LOOP_END");
 
-                std::vector<std::pair<int, int>> scan_result(0);
+                std::vector<std::vector<std::pair<int, int>>> scan_result(0);
                 for (int ii = 0; ii < n_scan; ii++) {
                     double scan_direction = tf2::getYaw(pose.pose.orientation) + virtual_laser.at(ii);
+                    // RCLCPP_INFO(logger_, "Check(%d): %f", ii, scan_direction);
                     
                     int current_x = map_center; 
                     int current_y = map_center; 
@@ -337,64 +341,186 @@ namespace tong_controller {
                         current_y = current_y + static_cast<int>(sin(scan_direction) * current_length);
                         current_length++;
 
-                        if (obstacle_map(current_x, current_y) == 1.0 
+                        if (visited_map(current_x, current_y) >= 0.0 
                         && current_x >= 0 && current_x < map_range && current_y >= 0 && current_y < map_range) {
-                            scan_result.push_back({current_x, current_y});
+                            int scan_result_rows = static_cast<int>(visited_map(current_x, current_y));
+                            while (static_cast<int>(scan_result.size()) <= scan_result_rows) {
+                                std::vector<std::pair<int, int>> new_row(0);
+                                scan_result.push_back(new_row);
+                            }
+                            scan_result.at(scan_result_rows).push_back({current_x, current_y});
                             break;
                         }
                     } while (current_x >= 0 && current_x < map_range && current_y >= 0 && current_y < map_range);
                 }
 
                 std::vector<std::vector<double>> obstacle_info(0);
-                for (auto k = 0; k < scan_result.size(); k++) {
-                    int imx = static_cast<int>(center_x) + (scan_result.at(k).first - map_center);
-                    int imy = static_cast<int>(center_y) + (scan_result.at(k).second - map_center);
-                    std::vector<unsigned int> neighborSetsCost(8);
-                    for (int jj = 0; jj < 8; jj++) {
-                        int nx1 = imx + neighborSets[jj].first;
-                        int ny1 = imy + neighborSets[jj].second;
-                        unsigned char cost1 = costmap->getCost(nx1, ny1);
-                        neighborSetsCost[jj] = static_cast<int>(cost1);
-                    }
-                    int count = 0;
-                    std::vector<int> neighborSetsIndex(2, 0);
-                    for (int jj = 0; jj < 8; jj++) {
-                        if (neighborSetsCost[jj] >= obstacle_threshold_) {
-                            int jj1 = (jj + 7) % 8;
-                            int jj2 = (jj + 1) % 8;
-                            if (neighborSetsCost[jj1] < obstacle_threshold_ || neighborSetsCost[jj2] < obstacle_threshold_) {
-                                neighborSetsIndex[count] = jj;
-                                count++;
+
+                // for (auto ii = 0; ii < scan_result.size(); ii++) {
+                //     for (auto k = 1; k < scan_result.at(ii).size(); k++) {
+                //         int point1x = scan_result.at(ii).at(k).first;
+                //         int point1y = scan_result.at(ii).at(k).second;
+                //         int point2x = scan_result.at(ii).at(k-1).first;
+                //         int point2y = scan_result.at(ii).at(k-1).second;
+                //         if (point1x != point2x || point1y != point2y) {
+                //             double Ax = 0.0, Ay = 0.0, B = 0.0;
+                //             double obstacle_x, obstacle_y;
+                //             int imx = static_cast<int>(center_x) + (point1x - map_center);
+                //             int imy = static_cast<int>(center_y) + (point1y - map_center);
+                //             costmap->mapToWorld(imx, imy, obstacle_x, obstacle_y);
+
+                //             Ax = point2y - point1y; 
+                //             Ay = point1x - point2x;
+                //             B = Ax * obstacle_x + Ay * obstacle_y;
+                //             // if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) {
+                //             // // if (Ax * P_x + Ay * P_y > B) {
+                //             //     Ax = -Ax;
+                //             //     Ay = -Ay;
+                //             //     B = -B;
+                //             // }
+
+                //             double slope_angle = atan2(point1y - point2y, point1x - point2x) + M_PI/2;
+                //             int mark_xm = imx + static_cast<int>(1.5 * cos(slope_angle));
+                //             int mark_ym = imy + static_cast<int>(1.5 * sin(slope_angle));
+                //             double mark_xw, mark_yw;
+                //             costmap->mapToWorld(mark_xm, mark_ym, mark_xw, mark_yw);
+                //             int mark_cost = static_cast<int>(costmap->getCost(mark_xm, mark_ym));
+                //             if ((Ax * mark_xw + Ay * mark_yw > B && mark_cost < obstacle_threshold_) || 
+                //                 (Ax * mark_xw + Ay * mark_yw <= B && mark_cost >= obstacle_threshold_)) {
+                //                 Ax = -Ax;
+                //                 Ay = -Ay;
+                //                 B = -B;
+                //             } 
+
+                //             obstacle_info.push_back({Ax, Ay, B});
+                //             RCLCPP_INFO(logger_, "Check(%d): Ax = %f, Ay = %f, B = %f", static_cast<int>(obstacle_info.size()), Ax, Ay, B);
+                //         }
+                //     }
+                // }
+
+                for (auto ii = 0; ii < scan_result.size(); ii++) {
+                    for (auto k = 0; k < scan_result.at(ii).size(); k++) {
+                        int imx = static_cast<int>(center_x) + (scan_result.at(ii).at(k).first - map_center);
+                        int imy = static_cast<int>(center_y) + (scan_result.at(ii).at(k).second - map_center);
+                        std::vector<unsigned int> neighborSetsCost(8);
+                        for (int jj = 0; jj < 8; jj++) {
+                            int nx1 = imx + neighborSets[jj].first;
+                            int ny1 = imy + neighborSets[jj].second;
+                            unsigned char cost1 = costmap->getCost(nx1, ny1);
+                            neighborSetsCost[jj] = static_cast<int>(cost1);
+                        }
+                        int count = 0;
+                        std::vector<int> neighborSetsIndex(2, 0);
+                        for (int jj = 0; jj < 8; jj++) {
+                            if (neighborSetsCost[jj] >= obstacle_threshold_) {
+                                int jj1 = (jj + 7) % 8;
+                                int jj2 = (jj + 1) % 8;
+                                if (neighborSetsCost[jj1] < obstacle_threshold_ || neighborSetsCost[jj2] < obstacle_threshold_) {
+                                    neighborSetsIndex[count] = jj;
+                                    count++;
+                                }
                             }
                         }
-                    }
-                    double Ax = 0.0, Ay = 0.0, B = 0.0;
-                    double obstacle_x, obstacle_y;
-                    costmap->mapToWorld(imx, imy, obstacle_x, obstacle_y);
-                    if (count == 2) {
-                        Ax = neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second;
-                        Ay = neighborSets[neighborSetsIndex[1]].first - neighborSets[neighborSetsIndex[0]].first;
-                        B = Ax * obstacle_x + Ay * obstacle_y;
+                        double Ax = 0.0, Ay = 0.0, B = 0.0;
+                        double obstacle_x, obstacle_y;
+                        costmap->mapToWorld(imx, imy, obstacle_x, obstacle_y);
+                        if (count == 2) {
+                            Ax = neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second;
+                            Ay = neighborSets[neighborSetsIndex[1]].first - neighborSets[neighborSetsIndex[0]].first;
+                            B = Ax * obstacle_x + Ay * obstacle_y;
 
-                        double slope_angle = atan2(neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second, 
-                                            neighborSets[neighborSetsIndex[0]].first - neighborSets[neighborSetsIndex[1]].first) + M_PI/2;
-                        int mark_xm = imx + static_cast<int>(1.5 * cos(slope_angle));
-                        int mark_ym = imy + static_cast<int>(1.5 * sin(slope_angle));
-                        double mark_xw, mark_yw;
-                        costmap->mapToWorld(mark_xm, mark_ym, mark_xw, mark_yw);
-                        int mark_cost = static_cast<int>(costmap->getCost(mark_xm, mark_ym));
-                        if ((Ax * mark_xw + Ay * mark_yw > B && mark_cost < obstacle_threshold_) || 
-                                (Ax * mark_xw + Ay * mark_yw <= B && mark_cost >= obstacle_threshold_)) {
-                            Ax = -Ax;
-                            Ay = -Ay;
-                            B = -B;
+                            // if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) {
+                            // // if (Ax * P_x + Ay * P_y > B) {
+                            //     Ax = -Ax;
+                            //     Ay = -Ay;
+                            //     B = -B;
+                            // }
+
+                            double slope_angle = atan2(neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second, 
+                                                neighborSets[neighborSetsIndex[0]].first - neighborSets[neighborSetsIndex[1]].first) + M_PI/2;
+                            int mark_xm = imx + static_cast<int>(1.5 * cos(slope_angle));
+                            int mark_ym = imy + static_cast<int>(1.5 * sin(slope_angle));
+                            double mark_xw, mark_yw;
+                            costmap->mapToWorld(mark_xm, mark_ym, mark_xw, mark_yw);
+                            int mark_cost = static_cast<int>(costmap->getCost(mark_xm, mark_ym));
+                            if ((Ax * mark_xw + Ay * mark_yw > B && mark_cost < obstacle_threshold_) || 
+                                 (Ax * mark_xw + Ay * mark_yw <= B && mark_cost >= obstacle_threshold_)) {
+                                Ax = -Ax;
+                                Ay = -Ay;
+                                B = -B;
+                            } 
+
+
+                            obstacle_info.push_back({Ax, Ay, B});
                         } 
-
-                        obstacle_info.push_back({Ax, Ay, B});
-                    }           
+                        
+                        
+                    }
                 }
 
+                // for (int i = 0; i < obstacle_info.size(); i++) {
+                //     RCLCPP_INFO(logger_, "OBSTACLE INFO: %d, %f, %f, %f, %d, %d", static_cast<int>(obstacle_info.size()), obstacle_info.at(i).at(0), obstacle_info.at(i).at(1), obstacle_info.at(i).at(2));
+                // }
                 MPCcontroller->set_obstacleConstraint(obstacle_info);
+
+
+
+                // int n_obstacle = record_position.size();
+                // Eigen::MatrixXd obstacle_info;
+                // obstacle_info.resize(n_obstacle, 3);
+                // for (int ii = 0; ii < n_obstacle; ii++) {
+                //     int imx = static_cast<int>(center_x) + (record_position.at(ii).first - map_center);
+                //     int imy = static_cast<int>(center_y) + (record_position.at(ii).second - map_center);
+                //     std::vector<unsigned int> neighborSetsCost(8);
+                //     for (int jj = 0; jj < 8; jj++) {
+                //         int nx1 = imx + neighborSets[jj].first;
+                //         int ny1 = imy + neighborSets[jj].second;
+                //         unsigned char cost1 = costmap->getCost(nx1, ny1);
+                //         neighborSetsCost[jj] = static_cast<int>(cost1);
+                //     }
+                //     int count = 0;
+                //     std::vector<int> neighborSetsIndex(2, 0);
+                //     for (int jj = 0; jj < 8; jj++) {
+                //         if (neighborSetsCost[jj] >= obstacle_threshold_) {
+                //             int jj1 = (jj + 7) % 8;
+                //             int jj2 = (jj + 1) % 8;
+                //             if (neighborSetsCost[jj1] < obstacle_threshold_ || neighborSetsCost[jj2] < obstacle_threshold_) {
+                //                 neighborSetsIndex[count] = jj;
+                //                 count++;
+                //             }
+                //         }
+                //     }
+                //     double Ax = 0.0, Ay = 0.0, B = 0.0;
+                //     double obstacle_x, obstacle_y;
+                //     costmap->mapToWorld(imx, imy, obstacle_x, obstacle_y);
+                //     if (count == 2) {
+                //         Ax = neighborSets[neighborSetsIndex[0]].second - neighborSets[neighborSetsIndex[1]].second;
+                //         Ay = neighborSets[neighborSetsIndex[1]].first - neighborSets[neighborSetsIndex[0]].first;
+                //         B = Ax * obstacle_x + Ay * obstacle_y;
+                //     } else if (count == 1) {
+                //         Ax = neighborSets[neighborSetsIndex[0]].second - 0;
+                //         Ay = 0 - neighborSets[neighborSetsIndex[0]].first;
+                //         B = Ax * obstacle_x + Ay * obstacle_y;
+                //     } else {
+                //         // Ax = imx - static_cast<int>(center_x); 
+                //         // Ay = imy - static_cast<int>(center_y); 
+                //         // B = Ax * obstacle_x + Ay * obstacle_y;
+                //         Ax = 0.0;
+                //         Ay = 0.0;
+                //         B = +INFINITY;
+                //     }
+                //     if (Ax * pose.pose.position.x + Ay * pose.pose.position.y > B) {
+                //         Ax = -Ax;
+                //         Ay = -Ay;
+                //         B = -B;
+                //     }
+                //     obstacle_info(ii, 0) = Ax;
+                //     obstacle_info(ii, 1) = Ay;
+                //     obstacle_info(ii, 2) = B;
+                // }
+
+            
+
 
                 // Update the path time
                 path_time_++;
@@ -441,6 +567,8 @@ namespace tong_controller {
         MPCcontroller->get_actualControl(linear_vel, angular_vel);
 
         // Populate and return message
+        geometry_msgs::msg::TwistStamped cmd_vel;
+        cmd_vel.header = pose.header;
         cmd_vel.twist.linear.x = linear_vel;
         cmd_vel.twist.angular.z = angular_vel;
         return cmd_vel;
@@ -448,7 +576,6 @@ namespace tong_controller {
 
     void TrackedMPC::setPlan(const nav_msgs::msg::Path &path) {
         RCLCPP_INFO(logger_, "Got new plan");
-        goal_pose = path.poses[path.poses.size() - 1];
 
         // Natural coordinate computation
         std::vector<double> path_x(path.poses.size(), 0.0);
@@ -470,6 +597,22 @@ namespace tong_controller {
             // s values must be strictly increasing for interpolation
             if (path_s.at(k) <= path_s.at(k - 1)) path_s.at(k) = path_s.at(k - 1) + 0.01;
         }
+
+        // Interpolation of the x, y, yaw components of the path with respect to the natural coordinate using a cubic spline
+        // try {
+        //     alglib::real_1d_array x, y, yaw, s;
+        //     x.setcontent(path_x.size(), &path_x[0]);
+        //     y.setcontent(path_y.size(), &path_y[0]);
+        //     yaw.setcontent(path_yaw.size(), &path_yaw[0]);
+        //     s.setcontent(path_s.size(), &path_s[0]);
+
+        //     spline1dbuildcubic(s, x, path_sp_x_);
+        //     spline1dbuildcubic(s, y, path_sp_y_);
+        //     spline1dbuildcubic(s, yaw, path_sp_yaw_);
+        // } catch(alglib::ap_error alglib_exception)
+        // {
+        //     RCLCPP_ERROR(logger_, "ALGLIB exception with message '%s'\n", alglib_exception.msg.c_str());
+        // }
 
         size_t cspline_n = path_x.size();
         if (cspline_x) {
@@ -562,10 +705,6 @@ namespace tong_controller {
                     virtual_laser_interval = parameter.as_double();
                 } else if (name == plugin_name_ + ".search_step") {
                     search_step = parameter.as_double();
-                } else if (name == plugin_name_ + ".goal_tolerance") {
-                    goal_tolerance_ = parameter.as_double();
-                } else if (name == plugin_name_ + ".kp_rot") {
-                    kp_rot_ = parameter.as_double();
                 }
             } else if (type == ParameterType::PARAMETER_INTEGER) {
                 if (name == plugin_name_ + ".prediction_horizon") {
@@ -585,14 +724,39 @@ namespace tong_controller {
     }
 
     void TrackedMPC::interpolateTrajectory(double t, double& x, double& y, double& yaw) {
+        // double s = path_length_*(3.0*std::pow(std::min(t/path_duration_, path_duration_), 2.0)-
+        //         2.0*std::pow(std::min(t/path_duration_, path_duration_), 3.0));
         double s = path_length_*(3.0*std::pow(std::min(t/path_duration_, 1.0), 2.0)-
                 2.0*std::pow(std::min(t/path_duration_, 1.0), 3.0));
+
+        // x = spline1dcalc(path_sp_x_, s);
+        // y = spline1dcalc(path_sp_y_, s);
+        // yaw = spline1dcalc(path_sp_yaw_, s);
 
         x = gsl_spline_eval(cspline_x, s, acc_x);
         y = gsl_spline_eval(cspline_y, s, acc_y);
         yaw = gsl_spline_eval(cspline_yaw, s, acc_yaw);
 
     }
+
+    const int dx[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    const int dy[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    void TrackedMPC::searchMap(int i, int j, int regionID, const Eigen::MatrixXd &obstacle_map, Eigen::MatrixXd &visited_map) {
+        int rows = obstacle_map.rows();
+        int cols = obstacle_map.cols();
+        if (i < 0 || i >= rows || j < 0 || j >= cols) return;
+        if (visited_map(i, j) >= 0.0 || obstacle_map(i, j) == 0) return;
+
+        visited_map(i, j) = regionID;
+
+        for (int k = 0; k < 8; k++) {
+            int new_i = i + dx[k];
+            int new_j = j + dy[k];
+            searchMap(new_i, new_j, regionID, obstacle_map, visited_map);
+        }
+    }
+
+     
 
 }  // namespace tong_controller
 
