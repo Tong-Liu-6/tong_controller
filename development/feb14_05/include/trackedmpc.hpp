@@ -67,8 +67,7 @@ protected:
   double w_min_, w_max_, acc_lin_max_, wheel_radius_, track_width_;
   int obstacle_avoidance_range;
   double virtual_laser_interval, virtual_laser_range, search_step;
-  int max_search_iterations; 
-  double sl_p, sl_a, l_slack, acc_slack;
+  double sl_p, sl_a, l_slack;
   
 
   // Controller internal parameters

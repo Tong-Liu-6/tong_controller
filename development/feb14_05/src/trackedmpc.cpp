@@ -65,7 +65,7 @@ namespace tong_controller {
         if (false == node->get_parameter(plugin_name_ + ".q", q_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "q");
 
-        declare_parameter_if_not_declared(node, plugin_name_ + ".r", rclcpp::ParameterValue(0.3));
+        declare_parameter_if_not_declared(node, plugin_name_ + ".r", rclcpp::ParameterValue(0.5));
         if (false == node->get_parameter(plugin_name_ + ".r", r_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "r");
 
@@ -88,10 +88,6 @@ namespace tong_controller {
         declare_parameter_if_not_declared(node, plugin_name_ + ".search_step", rclcpp::ParameterValue(0.05));
         if (false == node->get_parameter(plugin_name_ + ".search_step", search_step))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "search_step");
-
-        declare_parameter_if_not_declared(node, plugin_name_ + ".max_search_iterations", rclcpp::ParameterValue(10));
-        if (false == node->get_parameter(plugin_name_ + ".max_search_iterations", max_search_iterations))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "max_search_iterations");
         
         declare_parameter_if_not_declared(node, plugin_name_ + ".virtual_laser_range", rclcpp::ParameterValue(60.0));
         if (false == node->get_parameter(plugin_name_ + ".virtual_laser_range", virtual_laser_range))
@@ -109,7 +105,7 @@ namespace tong_controller {
         if (false == node->get_parameter(plugin_name_ + ".w_max", w_max_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "w_max");
 
-        declare_parameter_if_not_declared(node, plugin_name_ + ".acc_lin_max", rclcpp::ParameterValue(1.0));
+        declare_parameter_if_not_declared(node, plugin_name_ + ".acc_lin_max", rclcpp::ParameterValue(3.0));
         if (false == node->get_parameter(plugin_name_ + ".acc_lin_max", acc_lin_max_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "acc_lin_max");
 
@@ -129,21 +125,17 @@ namespace tong_controller {
         if (false == node->get_parameter(plugin_name_ + ".kp_rot", kp_rot_))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "kp_rot");
 
-        declare_parameter_if_not_declared(node, plugin_name_ + ".sl_p", rclcpp::ParameterValue(1.0));
+        declare_parameter_if_not_declared(node, plugin_name_ + ".sl_p", rclcpp::ParameterValue(10.0));
         if (false == node->get_parameter(plugin_name_ + ".sl_p", sl_p))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "sl_p");
 
-        declare_parameter_if_not_declared(node, plugin_name_ + ".sl_a", rclcpp::ParameterValue(1.0));
+        declare_parameter_if_not_declared(node, plugin_name_ + ".sl_a", rclcpp::ParameterValue(10.0));
         if (false == node->get_parameter(plugin_name_ + ".sl_a", sl_a))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "sl_a");
 
-        declare_parameter_if_not_declared(node, plugin_name_ + ".l_slack", rclcpp::ParameterValue(0.05));
+        declare_parameter_if_not_declared(node, plugin_name_ + ".l_slack", rclcpp::ParameterValue(0.08));
         if (false == node->get_parameter(plugin_name_ + ".l_slack", l_slack))
             RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "l_slack");
-        
-        declare_parameter_if_not_declared(node, plugin_name_ + ".acc_slack", rclcpp::ParameterValue(2.0));
-        if (false == node->get_parameter(plugin_name_ + ".acc_slack", acc_slack))
-            RCLCPP_ERROR(logger_, "Node %s: unable to retrieve parameter %s.", node->get_name(), "acc_slack");
 
         // Check parameter consistency
         if (std::fmod(fblin_frequency_, MPC_frequency_)!=0.0) {
@@ -171,9 +163,9 @@ namespace tong_controller {
         MPCcontroller->set_DebugMsgCallback(handleDebugMessages);
         MPCcontroller->set_InfoMsgCallback(handleInfoMessages);
 
-        MPCcontroller->set_MPCparams(1.0/MPC_frequency_, prediction_horizon_, q_, r_, sl_p, sl_a, l_slack, acc_slack, n_scan);
+        MPCcontroller->set_MPCparams(1.0/MPC_frequency_, prediction_horizon_, q_, r_, sl_p, sl_a, l_slack, n_scan);
         MPCcontroller->set_FBLINparams(1.0/fblin_frequency_, p_dist_);
-        MPCcontroller->set_robotParams(w_max_, w_min_, wheel_radius_, track_width_, acc_lin_max_);
+        MPCcontroller->set_robotParams(w_max_, w_min_, wheel_radius_, track_width_, acc_lin_max_/wheel_radius_);
 
         if (!MPCcontroller->initialize()) {
             RCLCPP_ERROR(logger_, "Unable to initialize MPC controller");
@@ -286,7 +278,7 @@ namespace tong_controller {
                     int state_cost = static_cast<int>(costmap->getCost(state_xm, state_ym));
                     if (state_cost >= obstacle_threshold_) {
                         double search_angle = referenceRobotState(3 * k + 1) + M_PI/2;
-                        for (int ii = 1; ii < max_search_iterations; ii++) {
+                        for (int ii = 1; ii < 10; ii++) {
                             unsigned int search_xm, search_ym;
                             double search_xw = state_xw + search_step * ii * cos(search_angle);
                             double search_yw = state_yw + search_step * ii * sin(search_angle);
@@ -594,10 +586,7 @@ namespace tong_controller {
                     sl_a = parameter.as_double();
                 } else if (name == plugin_name_ + ".l_slack") {
                     l_slack = parameter.as_double();
-                } else if (name == plugin_name_ + ".acc_slack") {
-                    acc_slack = parameter.as_double();
                 }
-
             } else if (type == ParameterType::PARAMETER_INTEGER) {
                 if (name == plugin_name_ + ".prediction_horizon") {
                     prediction_horizon_ = parameter.as_int();
@@ -607,10 +596,7 @@ namespace tong_controller {
                     obstacle_threshold_ = parameter.as_int();
                 } else if (name == plugin_name_ + ".obstacle_avoidance_range") {
                     obstacle_avoidance_range = parameter.as_int();
-                } else if (name == plugin_name_ + ".max_search_iterations") {
-                    max_search_iterations = parameter.as_int();
                 }
-                
             }
         }
 

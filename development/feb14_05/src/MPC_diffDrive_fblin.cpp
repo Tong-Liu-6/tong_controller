@@ -42,16 +42,16 @@ MPC_diffDrive_fblin::~MPC_diffDrive_fblin() {
 }
 
 void MPC_diffDrive_fblin::set_MPCparams(double samplingTime, int predictionHorizon, double q, double r, 
-                                        double sl_p, double sl_a, double l_slack, double acc_slack, int n_scan) {
+                                        double sl_p, double sl_a, double l_slack, int n_scan) {
     std::vector<double> lb(2, -INFINITY);
     std::vector<double> ub(2, +INFINITY);
 
     // Set MPC params
-    set_MPCparams(samplingTime, predictionHorizon, q, r, sl_p, sl_a, l_slack, acc_slack, n_scan, lb, ub);
+    set_MPCparams(samplingTime, predictionHorizon, q, r, sl_p, sl_a, l_slack, n_scan, lb, ub);
 }
 
 void MPC_diffDrive_fblin::set_MPCparams(double samplingTime, int predictionHorizon, double q, double r, 
-                                        double sl_p, double sl_a, double l_slack, double acc_slack, int n_scan, 
+                                        double sl_p, double sl_a, double l_slack, int n_scan, 
                                         const std::vector<double>& variableLB, const std::vector<double>& variableUB) {
     // Set MPC parameters
     _q = q;
@@ -61,19 +61,14 @@ void MPC_diffDrive_fblin::set_MPCparams(double samplingTime, int predictionHoriz
     _sl_p = sl_p;
     _sl_a = sl_a;
     _l_slack = l_slack;
-    _acc_slack = acc_slack;
     _n_scan = n_scan;
 
     // Set variable range
-    _lowerBound.reserve(2*_N + _n_scan + 2);
-    _upperBound.reserve(2*_N + _n_scan + 2);
+    _lowerBound.reserve(2*_N);
+    _upperBound.reserve(2*_N);
     for (auto i=0; i<_N; i++) {
         _lowerBound.insert(_lowerBound.end(), variableLB.begin(), variableLB.end());
         _upperBound.insert(_upperBound.end(), variableUB.begin(), variableUB.end());
-    }
-    for (auto i=0; i<_n_scan + 2; i++) {
-        _lowerBound.push_back(0.0);
-        _upperBound.push_back(1.0);
     }
 
     // Set the initialization flag
@@ -89,12 +84,12 @@ void MPC_diffDrive_fblin::set_FBLINparams(double samplingTime, double pointPdist
     _FBLINparamsInitialized = true;
 }
 
-void MPC_diffDrive_fblin::set_robotParams(double wheelVelMax, double wheelVelMin, double wheelRadius, double track, double linearAccMax) {
+void MPC_diffDrive_fblin::set_robotParams(double wheelVelMax, double wheelVelMin, double wheelRadius, double track, double wheelAccMax) {
     // Set robot parameters
     _wheelVelMax = wheelVelMax;
     _wheelVelMin = wheelVelMin;
     _wheelRadius = wheelRadius;
-    _linearAccMax = linearAccMax;
+    _wheelAccMax = wheelAccMax;
     _track = track;
 
     // Set the initialization flag
@@ -138,20 +133,22 @@ bool MPC_diffDrive_fblin::initialize() {
     compute_QcalMatrix();
     compute_RcalMatrix();
 
-    // _H = Eigen::MatrixXd::Zero(2*_N + _n_scan + 2, 2*_N + _n_scan + 2);
-    // _f = Eigen::VectorXd::Zero(2*_N + _n_scan + 2);
+    _H = Eigen::MatrixXd::Zero(2*_N, 2*_N);
+    _f = Eigen::VectorXd::Zero(2*_N);
+    // _Ain_tot = Eigen::MatrixXd::Zero(2*2*_N + 2*2*_N, 2*_N);
+    // _Bin_tot = Eigen::VectorXd::Zero(2*2*_N + 2*2*_N);
 
     // Initialize actual and reference data
     _actX = _actY = _actYaw = 0.0;
     _actXP = _actYP = 0.0;
     _predictRobotState = Eigen::VectorXd::Zero(3*(_N+1));
     _refMPCstate = Eigen::VectorXd::Zero(2*(_N+1));
-    _optimVect = Eigen::VectorXd::Zero(2*_N + _n_scan + 2);
+    _optimVect = Eigen::VectorXd::Zero(2*_N);
     pre_vPx = pre_vPy = 0.0;
 
     // Initialize the solver
     _solver = new GUROBIsolver(GUROBI_LICENSEID, GUROBI_USERNAME);
-    if (!_solver->initProblem(2*_N + _n_scan + 2, _lowerBound, _upperBound))
+    if (!_solver->initProblem(2*_N, _lowerBound, _upperBound))
     {
         errorMsg("[MPC_diffDrive_fblin.initialize] Error initializing the solver");
         return false;
@@ -339,10 +336,7 @@ void MPC_diffDrive_fblin::compute_AcalMatrix() {
     // Compute Acal matrix
     _Acal.block(0, 0, 2, 2) = Eigen::MatrixXd::Identity(2, 2);
 
-    // for (int k=0; k<_N+1; k++) {
-    //     _Acal.block(2*k, 0, 2, 2) = _plant_A.pow(k);
-    // }
-    for (int k=1; k<_N+1; k++) {
+    for (int k=0; k<_N+1; k++) {
         _Acal.block(2*k, 0, 2, 2) = _plant_A.pow(k);
     }
 
@@ -387,22 +381,12 @@ void MPC_diffDrive_fblin::compute_RcalMatrix() {
 
 void MPC_diffDrive_fblin::compute_objectiveMatrix() {
     // Initialize H and f matrices
-    _H = Eigen::MatrixXd::Zero(2*_N + _n_scan + 2, 2*_N + _n_scan + 2);
+    _H = Eigen::MatrixXd::Zero(2*_N, 2*_N);
     _f = Eigen::VectorXd::Zero(_H.rows());
 
-    // Compute H and f matrices (without slack variables)
-    Eigen::MatrixXd _H_1 = _Bcal.transpose()*_Qcal*_Bcal+_Rcal;
-    Eigen::VectorXd _f_1 = (_Acal*Eigen::Vector2d(_actXP, _actYP)-_refMPCstate).transpose()*_Qcal*_Bcal;
-    _H.block(0, 0, 2*_N, 2*_N) = _H_1;
-    _f.segment(0, 2*_N) = _f_1;
-
-    // Compute H and f matrices for slack variables
-    for (auto i = 2*_N; i < 2*_N + _n_scan; i++) {
-        _H(i ,i) = _sl_p;
-    }
-    for (auto i = 2*_N + _n_scan; i < 2*_N + _n_scan + 2; i++) {
-        _H(i ,i) = _sl_a;
-    }
+    // Compute H and f matrices
+    _H = _Bcal.transpose()*_Qcal*_Bcal+_Rcal;
+    _f = (_Acal*Eigen::Vector2d(_actXP, _actYP)-_refMPCstate).transpose()*_Qcal*_Bcal;
 
     // Check matrix
 //    saveMatrixToFile("H_matrix.csv", _H);
@@ -412,8 +396,8 @@ void MPC_diffDrive_fblin::compute_objectiveMatrix() {
 void MPC_diffDrive_fblin::compute_constraintMatrix() {
     // Initialize Ain_tot and Bin_tot matrices
     int n_obstacle = obstacle_info.size();
-    _Ain_tot = Eigen::MatrixXd::Zero(2*2*_N + 2*2*_N + _n_scan*_N, 2*_N + _n_scan + 2);
-    _Bin_tot = Eigen::VectorXd::Zero(2*2*_N + 2*2*_N + _n_scan*_N);
+    _Ain_tot = Eigen::MatrixXd::Zero(2*2*_N + 2*2*_N + n_obstacle*_N, 2*_N);
+    _Bin_tot = Eigen::VectorXd::Zero(2*2*_N + 2*2*_N + n_obstacle*_N);
 
     // Compute velocity constraint matrices
     Eigen::MatrixXd _Ain_vel = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
@@ -431,16 +415,16 @@ void MPC_diffDrive_fblin::compute_constraintMatrix() {
         _Bin_vel(2*(k+_N)) = -_wheelVelMin*2.0*_wheelRadius;
         _Bin_vel(2*(k+_N)+1) = -_wheelVelMin*2.0*_wheelRadius;
     }
-    // _Bin_vel(2*_N-2) = _linearAccMax*2.0*_MPC_Ts;
-    // _Bin_vel(2*_N-1) = _linearAccMax*2.0*_MPC_Ts;
-    // _Bin_vel(4*_N-2) = _linearAccMax*2.0*_MPC_Ts;
-    // _Bin_vel(4*_N-1) = _linearAccMax*2.0*_MPC_Ts;
+    // _Bin_vel(2*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    // _Bin_vel(2*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    // _Bin_vel(4*_N-2) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
+    // _Bin_vel(4*_N-1) = _wheelAccMax*2.0*_wheelRadius*_MPC_Ts;
 
     _Ain_tot.block(0, 0, 2*2*_N, 2*_N) = _Ain_vel;
     _Bin_tot.segment(0, 2*2*_N) = _Bin_vel;
 
     // Compute acceleration constraint matrices
-    Eigen::MatrixXd _Ain_acc = Eigen::MatrixXd::Zero(2*2*_N, 2*_N + _n_scan + 2);
+    Eigen::MatrixXd _Ain_acc = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
     Eigen::VectorXd _Bin_acc = Eigen::VectorXd::Zero(2*2*_N);
 
     Eigen::MatrixXd A_var = Eigen::MatrixXd::Zero(2*2*_N, 2*_N);
@@ -448,7 +432,7 @@ void MPC_diffDrive_fblin::compute_constraintMatrix() {
     A_var.block(0, 0, 2 * _N, 2 * _N) = I;
     A_var.block(2 * _N, 0, 2 * _N, 2 * _N) = -I;
 
-    Eigen::VectorXd d_V = Eigen::VectorXd::Constant(2*2*_N, _linearAccMax*_MPC_Ts);
+    Eigen::VectorXd d_V = Eigen::VectorXd::Constant(2*2*_N, _wheelAccMax*_wheelRadius*_MPC_Ts);
 
     Eigen::VectorXd v0 = Eigen::VectorXd::Zero(2*_N);
     v0(0) = pre_vPx;
@@ -457,60 +441,43 @@ void MPC_diffDrive_fblin::compute_constraintMatrix() {
     Eigen::MatrixXd V = Eigen::MatrixXd::Zero(2*_N, 2*_N);
     V(0, 0) = 1;
     V(1, 1) = 1;
-    for (auto k = 2; k < 2*_N; k++) {
+    for (auto k=2; k<2*_N; k++) {
         V(k, k) = 1;
         V(k, k-2) = -1;
     }
 
-    _Ain_acc.block(0, 0, 2*2*_N, 2*_N) = A_var * V;
-    for (auto k = 0; k < 2*_N; k++) {
-        _Ain_acc(2*k, 2*_N + _n_scan) = -_acc_slack*_MPC_Ts;
-        _Ain_acc(2*k + 1, 2*_N + _n_scan + 1) = -_acc_slack*_MPC_Ts;
-    }
+    _Ain_acc = A_var * V;
     _Bin_acc = d_V + A_var * v0;
 
-    _Ain_tot.block(2*2*_N, 0, 2*2*_N, 2*_N + _n_scan + 2) = _Ain_acc;
+    _Ain_tot.block(2*2*_N, 0, 2*2*_N, 2*_N) = _Ain_acc;
     _Bin_tot.segment(2*2*_N, 2*2*_N) = _Bin_acc;
 
     // Compute obstacle avoidance constraint matrices
     for (auto k = 0; k < n_obstacle; k++) {
-        Eigen::MatrixXd _Ain_obs = Eigen::MatrixXd::Zero(_N, 2*_N + _n_scan + 2); 
+        Eigen::MatrixXd _Ain_obs = Eigen::MatrixXd::Zero(_N, 2*_N);
         Eigen::VectorXd _Bin_obs = Eigen::VectorXd::Zero(_N);
         Eigen::MatrixXd Am_obs = Eigen::MatrixXd::Zero(_N, 2*(_N+1));
         Eigen::VectorXd Bm_obs = Eigen::VectorXd::Zero(_N);
 
-        double A_x, A_y, B_xy;
-        A_x = obstacle_info.at(k).at(0);
-        A_y = obstacle_info.at(k).at(1);
-        B_xy = obstacle_info.at(k).at(2);
-        double dl = _l_slack * pow(A_x*A_x + A_y*A_y, 0.5);
+        for (auto ii = 0; ii < _N; ii++) {
+            Am_obs(ii, 2*ii+2) = obstacle_info.at(k).at(0);
+            Am_obs(ii, 2*ii+3) = obstacle_info.at(k).at(1);
+            Bm_obs(ii) = obstacle_info.at(k).at(2);
+        }
         // std::ostringstream oss;
         // oss << "[MPC_diffDrive_fblin.set_referenceRobotState] No." << static_cast<int>(k)
-        //     << ", Ax=" << A_X
-        //     << ", Ay=" << A_y
-        //     << ", B=" << B_xy;
+        //     << ", Ax=" << obstacle_info.at(k).at(0)
+        //     << ", Ay=" << obstacle_info.at(k).at(1)
+        //     << ", B=" << obstacle_info.at(k).at(2);
         // infoMsg(oss.str());
-
-        for (auto ii = 0; ii < _N; ii++) {
-            Am_obs(ii, 2*ii+2) = A_x;
-            Am_obs(ii, 2*ii+3) = A_y;
-            Bm_obs(ii) = B_xy - dl;
-        }
-
-        _Ain_obs.block(0, 0, _N, 2*_N) = Am_obs*_Bcal;
-        for (auto ii = 0; ii < _N; ii++) {
-            _Ain_obs(ii, 2*_N + k) = -dl;
-        }
-
+        _Ain_obs = Am_obs*_Bcal;
         _Bin_obs = Bm_obs - Am_obs*_Acal*Eigen::Vector2d(_actXP, _actYP);
 
-        _Ain_tot.block(2*2*_N + 2*2*_N + k*_N, 0, _N, 2*_N + _n_scan + 2) = _Ain_obs;
+        _Ain_tot.block(2*2*_N + 2*2*_N + k*_N, 0, _N, 2*_N) = _Ain_obs;
         _Bin_tot.segment(2*2*_N + 2*2*_N + k*_N, _N) = _Bin_obs;
+
     }
-    // Eigen::VectorXd _Bin_obs = Eigen::VectorXd::Constant(_N, +INFINITY);
-    // for (auto k = n_obstacle; k < _n_scan; k++) {
-    //     _Bin_tot.segment(2*2*_N + 2*2*_N + k*_N, _N) = _Bin_obs;
-    // }
+
 
     // Check matrix
 //    saveMatrixToFile("Ain_tot_matrix.csv", _Ain_tot);

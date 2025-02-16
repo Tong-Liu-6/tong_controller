@@ -43,7 +43,7 @@ public:
      * @param wheelRadius wheel nominal radius
      * @param track distance between wheel contact points
      */
-    void set_robotParams(double wheelVelMax, double wheelVelMin, double wheelRadius, double track, double linearAccMax);
+    void set_robotParams(double wheelVelMax, double wheelVelMin, double wheelRadius, double track, double wheelAccMax);
 
     /**
      * @brief Set MPC controller parameters
@@ -55,9 +55,9 @@ public:
      * @param variableUB upper bounds of optimization variables
      */
     void set_MPCparams(double samplingTime, int predictionHorizon, double q, double r, 
-                       double sl_p, double sl_a, double l_slack, double acc_slack, int n_scan);
+                       double sl_p, double sl_a, double l_slack, int n_scan);
     void set_MPCparams(double samplingTime, int predictionHorizon, double q, double r,
-                       double sl_p, double sl_a, double l_slack, double acc_slack, int n_scan, 
+                       double sl_p, double sl_a, double l_slack, int n_scan, 
                        const std::vector<double> &variableLB, const std::vector<double> &variableUB);
 
     /**
@@ -155,7 +155,7 @@ private:
     int _N, _n_scan;
     double _MPC_Ts;
     double _q, _r, _k, _p;
-    double _sl_p, _sl_a, _l_slack, _acc_slack; 
+    double _sl_p, _sl_a, _l_slack; 
     bool _MPCparamsInitialized;
     double A_obs_x = 1.0, A_obs_y = 1.0, B_obs = +INFINITY;
 
@@ -184,7 +184,7 @@ private:
     // Robot parameters
     double _wheelVelMax, _wheelVelMin;
     double _track, _wheelRadius;
-    double _linearAccMax;
+    double _wheelAccMax;
     bool _robotParamsInitialized;
 
     // Controller variables
