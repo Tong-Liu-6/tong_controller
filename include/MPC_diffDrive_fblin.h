@@ -7,9 +7,6 @@
 #include "GUROBIsolver.h"
 #include "fblin_unicycle.h"
 
-// #define GUROBI_LICENSEID 960125
-// #define GUROBI_USERNAME  "bascetta"
-
 #define GUROBI_LICENSEID 2610262
 #define GUROBI_USERNAME  "tong6"
 

@@ -20,11 +20,6 @@ find_package(GSL REQUIRED)
 #
 find_package(GUROBI REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
-# find_package(ALGLIB REQUIRED)
-
-#
-# nav2_package()
-# set(CMAKE_CXX_STANDARD 17)
 
 include_directories(
   include
@@ -47,8 +42,7 @@ set(dependencies
 )
 
 add_library(${library_name} SHARED
-  src/trackedmpc.cpp
-  src/followtrajectory.cpp
+  src/diffmpc.cpp
   src/fblin_unicycle.cpp
   src/GUROBIsolver.cpp 
   src/MPC_diffDrive_fblin.cpp
@@ -59,8 +53,7 @@ ament_target_dependencies(${library_name}
   ${dependencies}
 )
 
-# target_link_libraries(${library_name} PRIVATE ALGLIB)
-target_link_libraries(${library_name} GSL::gsl GSL::gslcblas Eigen3::Eigen ${GUROBI_CXX_LIBRARY} ${GUROBI_LIBRARY}) # ALGLIB
+target_link_libraries(${library_name} GSL::gsl GSL::gslcblas Eigen3::Eigen ${GUROBI_CXX_LIBRARY} ${GUROBI_LIBRARY}) 
 
 pluginlib_export_plugin_description_file(nav2_core tong_controller_plugin.xml)
 

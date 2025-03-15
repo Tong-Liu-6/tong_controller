@@ -1,0 +1,9 @@
+<library path="tong_controller_plugin">
+	<class name="tong_controller/TrackedMPC" type="tong_controller::TrackedMPC" base_class_type="nav2_core::Controller">
+	  <description>This is a MPC Controller plugin for tracked robot.</description>
+	</class>
+
+	<class name="tong_controller/FollowTrajectory" type="tong_controller::FollowTrajectory" base_class_type="nav2_core::Controller">
+	  <description>This is a Follow Trajectory Controller plugin for tracked robot.</description>
+	</class>
+</library>

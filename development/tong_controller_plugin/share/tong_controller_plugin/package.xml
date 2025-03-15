@@ -2,9 +2,9 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>tong_controller_plugin</name>
-  <version>1.0.0</version>
-  <description>This is a MPC controller plugin for differential-drvie robot.</description>
-  <maintainer email="liutong1999_lt@163.com">Tong</maintainer>
+  <version>0.1.0</version>
+  <description>This is a Controller plugin for tracked robot.</description>
+  <maintainer email="tong.liu@mail.polimi.it">Tong</maintainer>
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
